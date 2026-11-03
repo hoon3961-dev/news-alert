@@ -271,12 +271,25 @@ def format_messages(arts: list, now: dt.datetime) -> list:
 
 
 def send_telegram(text: str) -> None:
-    r = requests.post(
-        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML",
-              "disable_web_page_preview": True},
-        timeout=15,
-    )
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    chat = TG_CHAT.strip()
+    payload = {"chat_id": chat, "text": text, "parse_mode": "HTML",
+               "disable_web_page_preview": True}
+    r = requests.post(url, json=payload, timeout=15)
+    if r.ok:
+        return
+    desc = r.json().get("description", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
+    print(f"[텔레그램 오류] {r.status_code}: {desc}", file=sys.stderr)
+    if "parse" in desc.lower():                    # 서식 문제면 서식 없이 다시 보냄
+        plain = html.unescape(re.sub(r'<a href="([^"]+)">[^<]*</a>', r"\1", text))
+        plain = re.sub(r"</?b>", "", plain)
+        r = requests.post(url, json={"chat_id": chat, "text": plain,
+                                     "disable_web_page_preview": True}, timeout=15)
+        if r.ok:
+            return
+        print(f"[텔레그램 오류] 재시도 실패 {r.status_code}: {r.text}", file=sys.stderr)
+    if "chat not found" in desc.lower():
+        print("→ TELEGRAM_CHAT_ID가 틀렸거나, 봇에게 먼저 메시지를 보내지 않았습니다.", file=sys.stderr)
     r.raise_for_status()
 
 
