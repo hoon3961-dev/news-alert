@@ -2,7 +2,7 @@ name: 중수청 뉴스 알림
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -32,7 +32,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           QUIET_HOURS: ${{ vars.QUIET_HOURS }}
-          QUERIES: ${{ vars.QUERIES || '중수청,중대범죄수사청,공소청' }}
+          EXCLUDE_PRESS: ${{ vars.EXCLUDE_PRESS }}
+          QUERIES: ${{ vars.QUERIES }}
         run: python news_alert.py
 
       - name: 발송 기록 저장
