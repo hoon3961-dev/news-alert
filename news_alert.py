@@ -41,6 +41,8 @@ MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사�
 FIRST_RUN_HOURS = 2                                # 첫 실행 때는 최근 2시간만
 MAX_ITEMS = int(os.getenv("MAX_ITEMS", "20"))      # 한 번에 보낼 최대 건수
 QUIET_HOURS = os.getenv("QUIET_HOURS", "")         # 예: "0-6" → 0~6시엔 보내지 않고 모아뒀다가 7시에 발송
+# 받지 않을 언론사(쉼표 구분). 언론사 이름이나 주소 일부가 들어가면 제외
+EXCLUDE_PRESS = [p.strip() for p in (os.getenv("EXCLUDE_PRESS") or "중수청일보").split(",") if p.strip()]
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -172,6 +174,9 @@ def collect(seen: dict, now: dt.datetime) -> list:
                 continue
             press = it["source"]
             title = html.unescape(it["title"]).strip()
+            if any(x in press or x in it["source_url"] or title.endswith(x) for x in EXCLUDE_PRESS):
+                seen[key] = now.isoformat()        # 제외 언론사
+                continue
             if press and title.endswith(" - " + press):   # 구글 뉴스 제목 끝의 ' - 언론사' 제거
                 title = title[: -len(press) - 3].strip()
             nt = norm_title(title)
