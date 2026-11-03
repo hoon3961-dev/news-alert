@@ -19,8 +19,22 @@ import requests
 KST = dt.timezone(dt.timedelta(hours=9))
 
 # ── 설정 (환경변수로 바꿀 수 있음) ─────────────────────────────
-QUERIES = [q.strip() for q in os.getenv("QUERIES", "중수청,중대범죄수사청,공소청").split(",") if q.strip()]
-PRIORITY_TERMS = ("중수청", "중대범죄수사청")      # 이 단어가 들어간 기사를 맨 위에
+# 검색어(쉼표 구분). 2026.10.7.~11.3. 중수청 뉴스스크랩 32회분(기사 612건) 분석으로 정함
+DEFAULT_QUERIES = ",".join([
+    # 기관
+    "중수청", "중대범죄수사청", "중수청장", "공소청",
+    "서울중수청 OR 서울지방중수청 OR 부산중수청 OR 대구중수청 OR 광주중수청 OR 대전중수청 OR 수원중수청",
+    "서울공소청 OR 서울중앙공소청 OR 수원공소청 OR 대구공소청 OR 부산공소청 OR 광주공소청 OR 대전공소청",
+    # 인물
+    "김지용", "임은정",
+    # 제도·쟁점
+    "수사 기소 분리", "형사사법체계 개편", "보완수사 요구", "검찰개혁",
+    "검찰총장 대행", "수사기관장 국무회의",
+    # 유관기관
+    "공수처",
+])
+QUERIES = [q.strip() for q in (os.getenv("QUERIES") or DEFAULT_QUERIES).split(",") if q.strip()]
+PRIORITY_TERMS = ("중수청", "중대범죄수사청", "김지용", "임은정")   # 이 단어가 제목에 있으면 맨 위에
 SEEN_FILE = os.getenv("SEEN_FILE", "seen.json")    # 이미 보낸 기사 기록
 KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시
@@ -215,11 +229,15 @@ def summarize(arts: list) -> None:
         blocks.append(f"<article id=\"{i}\">\n제목: {a['title']}\n본문: {body}\n</article>")
 
     prompt = (
-        "다음은 '중대범죄수사청(중수청)'과 '공소청' 관련 검색으로 수집한 언론 기사들이다.\n"
+        "다음은 중대범죄수사청(중수청) 언론동향 모니터링을 위해 수집한 기사들이다.\n"
         "각 기사마다 공무원 내부 보고용으로 핵심 요지를 1~2문장, 개조식 '~함/~임' 체로 요약하라. "
         "추측이나 평가는 넣지 말고 기사에 나온 사실만 쓴다.\n"
-        "또 기사가 실제로 중수청 또는 공소청(검찰개혁에 따른 신설 기관)에 관한 내용이면 relevant=true, "
-        "단어만 우연히 겹친 무관한 기사면 false로 표시하라.\n"
+        "관련성 판단: 다음 중 하나에 해당하면 relevant=true, 아니면 false로 표시하라.\n"
+        "① 중수청·공소청(본청·지방청, 청장·간부 포함)의 조직·인사·수사·사건·논란\n"
+        "② 수사·기소 분리 등 형사사법체계 개편, 수사권·관할 조정, 보완수사, 형소법 개정의 시행·혼란·평가\n"
+        "③ 경찰(국수본)·공수처·특검·특별감찰관 등 유관 수사기관 기사 중 중수청·공소청이나 형사사법체계 개편과 연결된 것\n"
+        "④ 위 주제를 다룬 사설·칼럼\n"
+        "단어만 우연히 겹친 기사(다른 나라 기관, 일반 사건사고 등)는 false.\n"
         "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true}, ...]\n\n"
         + "\n\n".join(blocks)
     )
@@ -248,10 +266,10 @@ def summarize(arts: list) -> None:
 # ── 전송 ─────────────────────────────────────────────────────
 def format_messages(arts: list, now: dt.datetime) -> list:
     e = html.escape
-    header = f"📰 <b>중수청·공소청 언론보도</b>\n{now:%m.%d. %H:%M} 기준 신규 {len(arts)}건\n"
+    header = f"📰 <b>중수청 등 언론보도</b>\n{now:%m.%d. %H:%M} 기준 신규 {len(arts)}건\n"
     blocks, section = [], None
     for n, a in enumerate(arts, 1):
-        sec = "■ 중수청" if a["priority"] else "■ 공소청 등"
+        sec = "■ 중수청" if a["priority"] else "■ 공소청·형사사법 등"
         prefix = f"\n<b>{sec}</b>\n" if sec != section else ""
         section = sec
         blocks.append(
