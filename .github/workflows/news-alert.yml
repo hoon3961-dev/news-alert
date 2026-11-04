@@ -49,6 +49,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           [ -f seen.json ] || exit 0
           cp seen.json "$RUNNER_TEMP/mine.json"
+          [ -f state.json ] && cp state.json "$RUNNER_TEMP/state.json"
           for i in 1 2 3 4 5; do
             git fetch origin main
             git reset --hard origin/main
@@ -62,6 +63,7 @@ jobs:
           theirs.update(mine)
           json.dump(theirs, open("seen.json", "w", encoding="utf-8"), ensure_ascii=False, indent=0, sort_keys=True)
           EOF
+            [ -f "$RUNNER_TEMP/state.json" ] && cp "$RUNNER_TEMP/state.json" state.json && git add state.json
             git add seen.json
             git diff --cached --quiet && exit 0
             git commit -m "발송 기록 갱신 [skip ci]"
