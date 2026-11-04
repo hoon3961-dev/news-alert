@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -43,7 +44,7 @@ KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
 BUFFER_HOURS = 2                                   # 직전 실행보다 이만큼 앞선 기사까지 받음(포털 반영 지연 대비)
 FIRST_RUN_HOURS = 2                                # 첫 실행 때는 최근 2시간만
-BATCH = int(os.getenv("BATCH", "30"))              # AI에 한 번에 보내는 기사 수(많으면 나눠서 처리, 버리는 기사 없음)
+BATCH = int(os.getenv("BATCH", "12"))              # AI에 한 번에 보내는 기사 수(많으면 나눠서 처리, 버리는 기사 없음)
 QUIET_HOURS = os.getenv("QUIET_HOURS", "")         # 예: "0-6" → 0~6시엔 보내지 않고 모아뒀다가 7시에 발송
 # 받지 않을 언론사(쉼표 구분). 언론사 이름이나 주소 일부가 들어가면 제외
 EXCLUDE_PRESS = [p.strip() for p in (os.getenv("EXCLUDE_PRESS") or "중수청일보").split(",") if p.strip()]
@@ -72,6 +73,8 @@ ALLOWED_PRESS = {
     "뉴스핌": "newspim.com", "경상매일신문": "ksmnews.co.kr",
     # 추가 요청
     "오마이뉴스": "ohmynews.com", "데일리안": "dailian.co.kr", "채널A": "ichannela.com", "시사저널": "sisajournal.com",
+    # 11.5. 조간 스크랩 반영
+    "프레시안": "pressian.com", "천지일보": "newscj.com", "조선비즈": "biz.chosun.com", "호남신문": "honamnews.co.kr",
     # 지방지
     "부산일보": "busan.com", "국제신문": "kookje.co.kr", "영남일보": "yeongnam.com", "대구일보": "idaegu.com",
     "경북일보": "kyongbuk.co.kr", "경북신문": "kbsm.net", "경북매일": "kbmaeil.com", "대경일보": "dkilbo.com",
@@ -88,8 +91,8 @@ ALLOWED_PRESS = {
 # 이름이 다르게 표시되는 경우(구글 뉴스 표기)
 PRESS_ALIASES = {"서울Pn": "서울신문", "JoongAng": "중앙일보", "Yonhap": "연합뉴스", "TV조선뉴스": "TV조선",
                  "news1": "뉴스1", "NEWSIS": "뉴시스", "한겨레신문": "한겨레", "The Fact": "더팩트",
-                 "OhmyNews": "오마이뉴스", "오마이TV": "오마이뉴스", "Channel A": "채널A", "채널A 뉴스": "채널A"}
-BLOCKED_HOSTS = ("biz.chosun.com", "weekly.chosun.com", "biz.sbs.co.kr")   # 같은 주소 아래 다른 매체
+                 "OhmyNews": "오마이뉴스", "ChosunBiz": "조선비즈", "Chosunbiz": "조선비즈", "뉴스천지": "천지일보", "오마이TV": "오마이뉴스", "Channel A": "채널A", "채널A 뉴스": "채널A"}
+BLOCKED_HOSTS = ("weekly.chosun.com", "biz.sbs.co.kr")   # 같은 주소 아래 다른 매체
 
 
 def press_allowed(press: str, url: str) -> bool:
@@ -318,9 +321,9 @@ def fetch_body(art: dict) -> str:
 RECENT_SENT: list = []                             # 최근 12시간 동안 보냈거나 모음 대기 중인 기사 제목(AI 중복 판단용)
 
 
-def summarize(arts: list) -> None:
+def summarize(arts: list, _again: bool = False) -> None:
     """각 기사에 summary(요지)와 relevant(관련 여부)를 채운다."""
-    for a in arts:
+    for a in ([] if _again else arts):        # 나눠서 다시 처리할 때는 본문을 다시 받지 않음
         a["body"] = fetch_body(a)
         a["relevant"] = True
         text = a["title"] + " " + a["body"]
@@ -371,37 +374,58 @@ def summarize(arts: list) -> None:
         + "<sent>\n" + ("\n".join("- " + t for t in RECENT_SENT[-80:]) or "(없음)") + "\n</sent>\n\n"
         + "\n\n".join(blocks)
     )
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": CLAUDE_MODEL, "max_tokens": 4000,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=120,
-        )
-        r.raise_for_status()
-        text = "".join(c.get("text", "") for c in r.json().get("content", []))
-        data = json.loads(text[text.index("["): text.rindex("]") + 1])
-        for d in data:
-            i = int(d.get("id", -1))
-            if 0 <= i < len(arts):
-                if d.get("summary"):
-                    arts[i]["summary"] = d["summary"].strip()
-                arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
-                arts[i]["dup"] = bool(d.get("dup", False))
-                if "jsc" in d:
-                    arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
-                if d.get("group") is not None:
-                    arts[i]["group"] = str(d["group"])
-    except Exception as e:
-        detail = ""
+    data, err = None, ""
+    for attempt in range(3):                       # 일시 오류(과부하·시간초과·답변 잘림)면 다시 시도
         try:
-            detail = r.text[:300]
-        except Exception:
-            pass
-        print(f"[경고] AI 요약 실패 → 핵심 단어 기준으로만 거름: {e} {detail}", file=sys.stderr)
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": CLAUDE_MODEL, "max_tokens": 8000,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=180,
+            )
+            if r.status_code in (401, 403):        # 키 문제는 다시 해도 안 됨
+                err = f"{r.status_code} {r.text[:200]}"
+                break
+            if r.status_code == 400 and "credit" in r.text.lower():
+                err = "크레딧 부족 " + r.text[:200]
+                break
+            r.raise_for_status()
+            res = r.json()
+            text = "".join(c.get("text", "") for c in res.get("content", []))
+            if res.get("stop_reason") == "max_tokens":
+                raise ValueError("답변이 길이 제한에 걸려 잘림")
+            data = json.loads(text[text.index("["): text.rindex("]") + 1])
+            break
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            try:
+                err += " " + r.text[:200]
+            except Exception:
+                pass
+            time.sleep(5 * (attempt + 1))
+    if data is None:
+        if len(arts) > 4:                          # 실패하면 절반씩 나눠 다시 처리
+            print(f"[알림] AI 처리 실패({err[:80]}) → {len(arts)}건을 나눠 다시 시도", file=sys.stderr)
+            half = len(arts) // 2
+            summarize(arts[:half], _again=True)
+            summarize(arts[half:], _again=True)
+            return
+        print(f"[경고] AI 요약 실패 → 핵심 단어 기준으로만 거름: {err}", file=sys.stderr)
         strict_filter(arts)
+        return
+    for d in data:
+        i = int(d.get("id", -1))
+        if 0 <= i < len(arts):
+            if d.get("summary"):
+                arts[i]["summary"] = d["summary"].strip()
+            arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
+            arts[i]["dup"] = bool(d.get("dup", False))
+            if "jsc" in d:
+                arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
+            if d.get("group") is not None:
+                arts[i]["group"] = str(d["group"])
 
 
 def strict_filter(arts: list) -> None:
