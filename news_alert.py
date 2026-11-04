@@ -47,6 +47,64 @@ BATCH = int(os.getenv("BATCH", "30"))              # AI에 한 번에 보내는 
 QUIET_HOURS = os.getenv("QUIET_HOURS", "")         # 예: "0-6" → 0~6시엔 보내지 않고 모아뒀다가 7시에 발송
 # 받지 않을 언론사(쉼표 구분). 언론사 이름이나 주소 일부가 들어가면 제외
 EXCLUDE_PRESS = [p.strip() for p in (os.getenv("EXCLUDE_PRESS") or "중수청일보").split(",") if p.strip()]
+
+# ── 받을 언론사 (중수청 뉴스스크랩 33회분 분석: 1·2군 41개사 + 지방지) ──
+# PRESS_FILTER=off 로 설정하면 언론사 제한 없이 모두 받음
+PRESS_FILTER = os.getenv("PRESS_FILTER", "on").strip().lower() != "off"
+ALLOWED_PRESS = {
+    # 1군: 석간
+    "문화일보": "munhwa.com", "내일신문": "naeil.com", "아시아경제": "asiae.co.kr", "헤럴드경제": "heraldcorp.com",
+    # 1군: 종합 일간지
+    "조선일보": "chosun.com", "서울신문": "seoul.co.kr", "경향신문": "khan.co.kr", "세계일보": "segye.com",
+    "중앙일보": "joongang.co.kr", "국민일보": "kmib.co.kr", "한국일보": "hankookilbo.com", "한겨레": "hani.co.kr",
+    # 1군: 통신사
+    "뉴스1": "news1.kr", "뉴시스": "newsis.com", "연합뉴스": "yna.co.kr",
+    # 1군: 경제지
+    "서울경제": "sedaily.com", "매일경제": "mk.co.kr", "파이낸셜뉴스": "fnnews.com", "한국경제": "hankyung.com",
+    "아시아투데이": "asiatoday.co.kr",
+    # 1군: 방송
+    "KBS": "kbs.co.kr", "JTBC": "jtbc.co.kr", "연합뉴스TV": "yonhapnewstv.co.kr", "MBN": "mbn.co.kr",
+    "SBS": "sbs.co.kr", "MBC": "imbc.com",
+    # 2군
+    "동아일보": "donga.com", "TV조선": "tvchosun.com", "YTN": "ytn.co.kr", "아주경제": "ajunews.com",
+    "이데일리": "edaily.co.kr", "머니투데이": "mt.co.kr", "뉴스토마토": "newstomato.com", "매일신문": "imaeil.com",
+    "노컷뉴스": "nocutnews.co.kr", "대구신문": "idaegu.co.kr", "더팩트": "tf.co.kr", "법률신문": "lawtimes.co.kr",
+    "뉴스핌": "newspim.com", "경상매일신문": "ksmnews.co.kr",
+    # 추가 요청
+    "오마이뉴스": "ohmynews.com", "데일리안": "dailian.co.kr", "채널A": "ichannela.com", "시사저널": "sisajournal.com",
+    # 지방지
+    "부산일보": "busan.com", "국제신문": "kookje.co.kr", "영남일보": "yeongnam.com", "대구일보": "idaegu.com",
+    "경북일보": "kyongbuk.co.kr", "경북신문": "kbsm.net", "경북매일": "kbmaeil.com", "대경일보": "dkilbo.com",
+    "일간경북신문": "", "경북연합일보": "", "대구광역일보": "", "경남신문": "knnews.co.kr", "경남도민일보": "idomin.com",
+    "경상일보": "ksilbo.co.kr", "울산매일": "iusm.co.kr", "광주일보": "kwangju.co.kr", "광주매일신문": "kjdaily.com",
+    "남도일보": "namdonews.com", "무등일보": "mdilbo.com", "전남일보": "jnilbo.com", "전북일보": "jjan.kr",
+    "전북도민일보": "domin.co.kr", "새전북신문": "sjbnews.com", "대전일보": "daejonilbo.com", "중도일보": "joongdo.co.kr",
+    "충청투데이": "cctoday.co.kr", "충남일보": "chungnamilbo.co.kr", "충북일보": "inews365.com", "충청매일": "ccdn.co.kr",
+    "충청타임즈": "cctimes.kr", "중부매일": "jbnews.com", "충청일보": "ccdailynews.com", "경인일보": "kyeongin.com",
+    "경기일보": "kyeonggi.com", "중부일보": "joongboo.com", "기호일보": "kihoilbo.co.kr", "인천일보": "incheonilbo.com",
+    "강원일보": "kwnews.co.kr", "강원도민일보": "kado.net", "제주일보": "jejunews.com", "한라일보": "ihalla.com",
+    "제민일보": "jemin.com", "산경일보": "", "동방일보": "", "대한일보": "",
+}
+# 이름이 다르게 표시되는 경우(구글 뉴스 표기)
+PRESS_ALIASES = {"서울Pn": "서울신문", "JoongAng": "중앙일보", "Yonhap": "연합뉴스", "TV조선뉴스": "TV조선",
+                 "news1": "뉴스1", "NEWSIS": "뉴시스", "한겨레신문": "한겨레", "The Fact": "더팩트",
+                 "OhmyNews": "오마이뉴스", "오마이TV": "오마이뉴스", "Channel A": "채널A", "채널A 뉴스": "채널A"}
+BLOCKED_HOSTS = ("biz.chosun.com", "weekly.chosun.com", "biz.sbs.co.kr")   # 같은 주소 아래 다른 매체
+
+
+def press_allowed(press: str, url: str) -> bool:
+    if not PRESS_FILTER:
+        return True
+    host = urlparse(url).netloc.lower()
+    if any(host == b or host.endswith("." + b) for b in BLOCKED_HOSTS):
+        return False
+    name = PRESS_ALIASES.get(press.strip(), press.strip())
+    for p, dom in ALLOWED_PRESS.items():
+        if name == p or name.startswith(p + " ") or (p in ("KBS", "SBS", "MBC", "MBN", "JTBC", "YTN") and name.startswith(p)):
+            return True
+        if dom and (host == dom or host.endswith("." + dom)):
+            return True
+    return False
 # 제목·본문에 이 단어가 있으면 제외(쉼표 구분). 예: 동명이인 기사
 EXCLUDE_WORDS = [w.strip() for w in (os.getenv("EXCLUDE_WORDS") or "촬영감독,촬영 감독").split(",") if w.strip()]
 # 본문에 이 단어가 하나도 없으면 관련 없는 기사로 보고 제외 (동명이인 등 걸러내기)
@@ -209,7 +267,8 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
                 continue
             press = it["source"]
             title = html.unescape(it["title"]).strip()
-            if any(x in press or x in it["source_url"] or title.endswith(x) for x in EXCLUDE_PRESS):
+            if (any(x in press or x in it["source_url"] or title.endswith(x) for x in EXCLUDE_PRESS)
+                    or not press_allowed(press, it["source_url"])):
                 seen[key] = now.isoformat()        # 제외 언론사
                 continue
             if press and title.endswith(" - " + press):   # 구글 뉴스 제목 끝의 ' - 언론사' 제거
