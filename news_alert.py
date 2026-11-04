@@ -40,7 +40,8 @@ STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모
 DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES", "60"))   # 공소청·형사사법 기사 모음 간격(분)
 LEAD_TERMS = ("중수청", "중대범죄수사청")             # 본문 첫머리에 있으면 중수청 기사로 봄
 KEEP_DAYS = 7                                      # 기록 보관 기간
-MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시
+MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
+BUFFER_HOURS = 2                                   # 직전 실행보다 이만큼 앞선 기사까지 받음(포털 반영 지연 대비)
 FIRST_RUN_HOURS = 2                                # 첫 실행 때는 최근 2시간만
 MAX_ITEMS = int(os.getenv("MAX_ITEMS", "20"))      # 한 번에 보낼 최대 건수
 QUIET_HOURS = os.getenv("QUIET_HOURS", "")         # 예: "0-6" → 0~6시엔 보내지 않고 모아뒀다가 7시에 발송
@@ -178,9 +179,16 @@ def decode_links(arts: list) -> None:
                 a["press"] = press_name(a["url"])
 
 
-def collect(seen: dict, now: dt.datetime) -> list:
+def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
     first_run = not seen
-    max_age = dt.timedelta(hours=FIRST_RUN_HOURS if first_run else MAX_AGE_HOURS)
+    if first_run:
+        max_age = dt.timedelta(hours=FIRST_RUN_HOURS)
+    elif last_run:
+        # 직전 실행 시각 - 2시간 이후 기사만 (밤사이 쉬었다면 그만큼 넓어짐), 최대 24시간
+        gap = now - dt.datetime.fromisoformat(last_run) + dt.timedelta(hours=BUFFER_HOURS)
+        max_age = min(gap, dt.timedelta(hours=MAX_AGE_HOURS))
+    else:
+        max_age = dt.timedelta(hours=MAX_AGE_HOURS)
     found, titles = {}, set()
     for q in QUERIES:
         try:
@@ -197,8 +205,7 @@ def collect(seen: dict, now: dt.datetime) -> list:
             except (TypeError, ValueError):
                 pub = now
             if now - pub > max_age:
-                if first_run:                      # 첫 실행 때 건너뛴 기사는 이후에도 보내지 않음
-                    seen[key] = now.isoformat()
+                seen[key] = now.isoformat()        # 지난 기사는 이후에도 보내지 않음
                 continue
             press = it["source"]
             title = html.unescape(it["title"]).strip()
@@ -426,7 +433,7 @@ def main() -> int:
 
     seen = load_seen()
     state = load_state()
-    arts = collect(seen, now)[: MAX_ITEMS * 2]
+    arts = collect(seen, now, state.get("last_run", ""))[: MAX_ITEMS * 2]
     decode_links(arts)
     summarize(arts)
 
@@ -473,6 +480,7 @@ def main() -> int:
     if not arts:
         print("새 기사 없음")
 
+    state["last_run"] = now.isoformat()
     save_seen(seen, now)                           # 발송 성공 후에만 기록
     save_state(state)
     return 0
