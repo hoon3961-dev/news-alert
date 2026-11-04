@@ -36,6 +36,9 @@ DEFAULT_QUERIES = ",".join([
 QUERIES = [q.strip() for q in (os.getenv("QUERIES") or DEFAULT_QUERIES).split(",") if q.strip()]
 PRIORITY_TERMS = ("중수청", "중대범죄수사청", "김지용", "임은정")   # 이 단어가 제목에 있으면 맨 위에
 SEEN_FILE = os.getenv("SEEN_FILE", "seen.json")    # 이미 보낸 기사 기록
+STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모음 대기 목록
+DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES", "60"))   # 공소청·형사사법 기사 모음 간격(분)
+LEAD_TERMS = ("중수청", "중대범죄수사청")             # 본문 첫머리에 있으면 중수청 기사로 봄
 KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시
 FIRST_RUN_HOURS = 2                                # 첫 실행 때는 최근 2시간만
@@ -117,6 +120,22 @@ def save_seen(seen: dict, now: dt.datetime) -> None:
     kept = {k: v for k, v in seen.items() if dt.datetime.fromisoformat(v) >= cutoff}
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(kept, f, ensure_ascii=False, indent=0, sort_keys=True)
+
+
+def load_state() -> dict:
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            st = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        st = {}
+    st.setdefault("pending", [])
+    st.setdefault("last_digest", "")
+    return st
+
+
+def save_state(st: dict) -> None:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=1)
 
 
 # ── 수집 ─────────────────────────────────────────────────────
@@ -243,6 +262,9 @@ def summarize(arts: list) -> None:
         # AI 키가 없을 때: 본문 첫머리 120자 정도를 요지로 사용
         first = re.sub(r"\s+", " ", a["body"])[:120]
         a["summary"] = (first.rsplit(" ", 1)[0] + "…") if len(first) == 120 else first
+        # 중수청 기사 판별(기본): 제목에 우선 단어, 또는 본문 첫머리 300자에 중수청
+        a["priority"] = a["priority"] or any(t in a["body"][:300] for t in LEAD_TERMS)
+        a["group"] = None
     if not arts:
         return
     if not ANTHROPIC_KEY:
@@ -265,7 +287,10 @@ def summarize(arts: list) -> None:
         "③ 경찰(국수본)·공수처·특검·특별감찰관 등 유관 수사기관 기사 중 중수청·공소청이나 형사사법체계 개편과 연결된 것\n"
         "④ 위 주제를 다룬 사설·칼럼\n"
         "단어만 우연히 겹친 기사(다른 나라 기관, 일반 사건사고 등)와 동명이인 기사(예: 촬영감독·연예인·운동선수 김지용)는 false.\n"
-        "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true}, ...]\n\n"
+        "jsc 판단: 기사의 주된 대상이 중수청(중대범죄수사청 본청·지방청, 김지용 청장 등 중수청 간부, 중수청 수사·사건·조직)이면 true. "
+        "공소청·경찰·공수처·형사사법체계 일반이 주된 대상이고 중수청은 곁가지로 언급되면 false.\n"
+        "group: 같은 사안(같은 사건·발언·발표)을 다룬 기사끼리 같은 숫자를 주고, 다른 사안은 다른 숫자를 준다.\n"
+        "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true, \"jsc\": true, \"group\": 1}, ...]\n\n"
         + "\n\n".join(blocks)
     )
     try:
@@ -286,6 +311,10 @@ def summarize(arts: list) -> None:
                 if d.get("summary"):
                     arts[i]["summary"] = d["summary"].strip()
                 arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
+                if "jsc" in d:
+                    arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
+                if d.get("group") is not None:
+                    arts[i]["group"] = str(d["group"])
     except Exception as e:
         detail = ""
         try:
@@ -304,19 +333,51 @@ def strict_filter(arts: list) -> None:
 
 
 # ── 전송 ─────────────────────────────────────────────────────
-def format_messages(arts: list, now: dt.datetime) -> list:
+def fmt_time(t: dt.datetime, now: dt.datetime) -> str:
+    return f"{t:%H:%M}" if t.date() == now.date() else f"{t:%m.%d. %H:%M}"
+
+
+def group_articles(arts: list) -> list:
+    """같은 사안 기사 묶기 → [[대표기사, 관련기사...], ...] (AI group, 없으면 제목 유사도)"""
+    groups, by_key = [], {}
+    for a in arts:
+        key = a.get("group")
+        if key is None:
+            for g in groups:                       # AI 묶음이 없으면 제목이 비슷한 것끼리
+                if similar(g[0]["title"], a["title"]):
+                    g.append(a)
+                    break
+            else:
+                groups.append([a])
+            continue
+        if key in by_key:
+            by_key[key].append(a)
+        else:
+            by_key[key] = [a]
+            groups.append(by_key[key])
+    return groups
+
+
+def similar(t1: str, t2: str) -> bool:
+    b = lambda t: {t[i:i + 2] for i in range(len(t) - 1)}
+    x, y = b(norm_title(t1)), b(norm_title(t2))
+    return bool(x and y) and len(x & y) / min(len(x), len(y)) >= 0.6
+
+
+def format_messages(arts: list, now: dt.datetime, header: str) -> list:
     e = html.escape
-    header = f"📰 <b>중수청 등 언론보도</b>\n{now:%m.%d. %H:%M} 기준 신규 {len(arts)}건\n"
-    blocks, section = [], None
-    for n, a in enumerate(arts, 1):
-        sec = "■ 중수청" if a["priority"] else "■ 공소청·형사사법 등"
-        prefix = f"\n<b>{sec}</b>\n" if sec != section else ""
-        section = sec
+    blocks = []
+    for n, g in enumerate(group_articles(arts), 1):
+        a = g[0]
+        link = f"<a href=\"{e(a['url'], quote=True)}\">기사 보기</a>"
+        if len(g) > 1:
+            more = ", ".join(f"<a href=\"{e(x['url'], quote=True)}\">{e(x['press'])}</a>" for x in g[1:])
+            link += f" · 같은 내용 {len(g) - 1}건: {more}"
         blocks.append(
-            f"{prefix}\n{n}. <b>{e(a['title'])}</b>\n"
-            f"   {e(a['press'])} · {a['pub']:%H:%M}\n"
+            f"\n{n}. <b>{e(a['title'])}</b>\n"
+            f"   {e(a['press'])} · {fmt_time(a['pub'], now)}\n"
             + (f"   ▸ {e(a['summary'])}\n" if a["summary"] else "")
-            + f"   <a href=\"{e(a['url'], quote=True)}\">기사 보기</a>"
+            + f"   {link}"
         )
     msgs, cur = [], header
     for b in blocks:                               # 텔레그램 4096자 제한 대비 분할
@@ -364,22 +425,56 @@ def main() -> int:
         return 0
 
     seen = load_seen()
+    state = load_state()
     arts = collect(seen, now)[: MAX_ITEMS * 2]
     decode_links(arts)
     summarize(arts)
 
     for a in arts:                                 # 무관 기사도 다시 안 보도록 기록
         seen[a["key"]] = now.isoformat()
-    arts = [a for a in arts if a["relevant"]][:MAX_ITEMS]
+    arts = [a for a in arts if a["relevant"]]
 
-    if arts:
-        for msg in format_messages(arts, now):
+    # ① 중수청 기사: 바로 발송
+    urgent = [a for a in arts if a["priority"]][:MAX_ITEMS]
+    if urgent:
+        head = f"📰 <b>중수청 등 언론보도</b> · 중수청\n{now:%m.%d. %H:%M} 기준 신규 {len(urgent)}건\n"
+        for msg in format_messages(urgent, now, head):
             send_telegram(msg)
-        print(f"{len(arts)}건 발송")
-    else:
+        print(f"중수청 {len(urgent)}건 즉시 발송")
+
+    # ② 공소청·형사사법 기사: 대기 목록에 쌓았다가 마지막 모음 발송 후 DIGEST_MINUTES 지나면 발송
+    for a in arts:
+        if not a["priority"]:
+            state["pending"].append({"url": a["url"], "title": a["title"], "press": a["press"],
+                                     "pub": a["pub"].isoformat(), "summary": a["summary"],
+                                     "group": a.get("group"), "found": now.isoformat()})
+    last = dt.datetime.fromisoformat(state["last_digest"]) if state["last_digest"] else None
+    due = last is None or now - last >= dt.timedelta(minutes=DIGEST_MINUTES)
+    if state["pending"] and due:
+        items = []
+        for p_ in state["pending"]:
+            p_ = dict(p_)
+            p_["pub"] = dt.datetime.fromisoformat(p_["pub"])
+            p_["priority"] = False
+            # 대기 중 들어온 기사끼리는 AI 묶음 번호가 실행마다 달라서 제목 유사도로 묶음
+            p_["group"] = None if len({x.get("found") for x in state["pending"]}) > 1 else p_.get("group")
+            items.append(p_)
+        since = last.strftime("%H:%M") if last and last.date() == now.date() else "직전"
+        head = (f"📰 <b>중수청 등 언론보도</b> · 공소청·형사사법 등 모음\n"
+                f"{since}~{now:%H:%M} 신규 {len(items)}건\n")
+        for msg in format_messages(items, now, head):
+            send_telegram(msg)
+        print(f"공소청·형사사법 {len(items)}건 모음 발송")
+        state["pending"] = []
+        state["last_digest"] = now.isoformat()
+    elif state["pending"]:
+        print(f"공소청·형사사법 {len(state['pending'])}건 대기 중 (모음 발송까지 "
+              f"{DIGEST_MINUTES - int((now - last).total_seconds() // 60)}분)")
+    if not arts:
         print("새 기사 없음")
 
     save_seen(seen, now)                           # 발송 성공 후에만 기록
+    save_state(state)
     return 0
 
 
