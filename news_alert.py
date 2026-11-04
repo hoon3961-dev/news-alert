@@ -45,7 +45,7 @@ KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
 BUFFER_HOURS = 2                                   # 직전 실행보다 이만큼 앞선 기사까지 받음(포털 반영 지연 대비)
 FIRST_RUN_HOURS = 2                                # 첫 실행 때는 최근 2시간만
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "20"))      # 한 번에 보낼 최대 건수
+BATCH = int(os.getenv("BATCH", "30"))              # AI에 한 번에 보내는 기사 수(많으면 나눠서 처리, 버리는 기사 없음)
 QUIET_HOURS = os.getenv("QUIET_HOURS", "")         # 예: "0-6" → 0~6시엔 보내지 않고 모아뒀다가 7시에 발송
 # 받지 않을 언론사(쉼표 구분). 언론사 이름이나 주소 일부가 들어가면 제외
 EXCLUDE_PRESS = [p.strip() for p in (os.getenv("EXCLUDE_PRESS") or "중수청일보").split(",") if p.strip()]
@@ -297,6 +297,9 @@ def summarize(arts: list) -> None:
         "③ 경찰(국수본)·공수처·특검·특별감찰관 등 유관 수사기관 기사 중 중수청·공소청이나 형사사법체계 개편과 연결된 것\n"
         "④ 위 주제를 다룬 사설·칼럼\n"
         "단어만 우연히 겹친 기사(다른 나라 기관, 일반 사건사고 등)와 동명이인 기사(예: 촬영감독·연예인·운동선수 김지용)는 false.\n"
+        "공소청이 개별 형사사건을 송치받거나 기소·구형·상고했다는 단순 사건 보도(선거법 위반 송치, 일반 범죄 기소·재판 등)는 "
+        "수사·기소 분리 등 제도 쟁점이나 중수청과 연결되지 않으면 false. 정당·선거 정치 기사, 날씨·생활 기사도 false.\n"
+        "반대로 중수청이 언급된 사설·칼럼·시평, 중수청 관할·이첩·파견 문제를 다룬 기사는 짧게 언급돼도 true.\n"
         "jsc 판단: 기사의 주된 대상이 중수청(중대범죄수사청 본청·지방청, 김지용 청장 등 중수청 간부, 중수청 수사·사건·조직)이면 true. "
         "공소청·경찰·공수처·형사사법체계 일반이 주된 대상이고 중수청은 곁가지로 언급되면 false.\n"
         "group: 같은 사안(같은 사건·발언·발표)을 다룬 기사끼리 같은 숫자를 주고, 다른 사안은 다른 숫자를 준다.\n"
@@ -517,9 +520,10 @@ def main() -> int:
 
     seen = load_seen()
     state = load_state()
-    arts = collect(seen, now, state.get("last_run", ""))[: MAX_ITEMS * 2]
+    arts = collect(seen, now, state.get("last_run", ""))
     decode_links(arts)
-    summarize(arts)
+    for i in range(0, len(arts), BATCH):           # 기사가 많으면 나눠서 요약·판단
+        summarize(arts[i:i + BATCH])
 
     for a in arts:                                 # 무관 기사도 다시 안 보도록 기록
         seen[a["key"]] = now.isoformat()
@@ -534,7 +538,7 @@ def main() -> int:
             state["daily"].append(to_record(a, now))
 
     # ① 중수청 기사 + 🔴 대응 검토 기사: 바로 발송
-    urgent = [a for a in arts if a["priority"]][:MAX_ITEMS]
+    urgent = [a for a in arts if a["priority"]]    # 건수 제한 없음(긴 경우 여러 통으로 나눠 발송)
     red_now = [a for a in arts if not a["priority"] and a.get("action") == "red"]
     if urgent:
         head = f"📰 <b>중수청 등 언론보도</b> · 중수청\n{now:%m.%d. %H:%M} 기준 신규 {len(urgent)}건\n"
