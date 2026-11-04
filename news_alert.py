@@ -38,8 +38,6 @@ PRIORITY_TERMS = ("중수청", "중대범죄수사청", "김지용", "임은정"
 SEEN_FILE = os.getenv("SEEN_FILE", "seen.json")    # 이미 보낸 기사 기록
 STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모음 대기 목록
 DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES", "60"))   # 공소청·형사사법 기사 모음 간격(분)
-DAILY_HOUR = int(os.getenv("DAILY_HOUR", "17"))   # 이 시각 이후 첫 실행 때 '오늘의 대응 검토 기사' 발송
-AREAS = ("법령검토", "지침제정", "기관협의", "수사지원", "타부서 소관")   # 수사정책담당관실 업무 구분
 LEAD_TERMS = ("중수청", "중대범죄수사청")             # 본문 첫머리에 있으면 중수청 기사로 봄
 KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
@@ -277,7 +275,6 @@ def summarize(arts: list) -> None:
         # 중수청 기사 판별(기본): 제목에 우선 단어, 또는 본문 첫머리 300자에 중수청
         a["priority"] = a["priority"] or any(t in a["body"][:300] for t in LEAD_TERMS)
         a["group"] = None
-        a["action"], a["area"], a["reason"] = "", "", ""
         a["dup"] = False
     if not arts:
         return
@@ -307,21 +304,11 @@ def summarize(arts: list) -> None:
         "jsc 판단: 기사의 주된 대상이 중수청(중대범죄수사청 본청·지방청, 김지용 청장 등 중수청 간부, 중수청 수사·사건·조직)이면 true. "
         "공소청·경찰·공수처·형사사법체계 일반이 주된 대상이고 중수청은 곁가지로 언급되면 false.\n"
         "group: 같은 사안(같은 사건·발언·발표)을 다룬 기사끼리 같은 숫자를 주고, 다른 사안은 다른 숫자를 준다.\n"
-        "action 판단: 이 알림은 중수청 본청 '수사정책담당관실'(업무: 법령검토, 지침제정, 기관협의, 수사지원)이 받는다. "
-        "기사 내용으로 볼 때 이 부서의 대응 검토가 필요한지 판단하라.\n"
-        "- 법령검토: 중수청법·형사소송법 등 개정 논의, 수사 대상·관할 규정 공백 지적, 국회 입법 발의\n"
-        "- 지침제정: 현장 혼란 보도(고소장 접수, 이첩·이관 기준, 조서 작성, 영장 절차 등), 기관별 기준 불일치 지적\n"
-        "- 기관협의: 공소청·경찰·공수처·금감원 등과의 관할·이첩·보완수사·리니언시 갈등, 협의체 관련 보도\n"
-        "- 수사지원: 장비·시스템 미비(킥스, 포렌식, 유치장 등), 수사 인력·인프라 문제\n"
-        "- 타부서 소관: 해명·홍보 대응이 필요한 비판·오보, 인사·감찰 등 다른 부서 업무\n"
-        "action은 \"red\"(위 업무와 직접 연결되어 사실확인·조치 검토가 필요), \"yellow\"(관련은 있으나 참고 수준), \"\"(해당 없음) 중 하나. "
-        "단순 동정·일반 사건 보도는 \"\". red는 꼭 필요한 경우에만 쓴다.\n"
-        "area는 위 업무 구분 중 해당하는 것(둘이면 '지침제정·기관협의'처럼), reason은 검토 포인트를 25자 내외 명사형으로(예: '조서 작성 기준 정합성 확인').\n"
         "dup 판단: 맨 아래 sent 태그 안의 목록은 최근 이미 알림을 보낸 기사 제목이다. 기사가 목록 중 하나와 같은 사안(같은 사건·발표·발언·조치)이고 "
         "새로운 진전(예: 고발→기소처럼 단계가 바뀜, 새 수치·새 당사자 입장 공개)이 없으면 dup=true. "
         "표현만 다른 같은 내용(예: '고발건 배당'과 '수사 착수')은 dup=true.\n"
         "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true, \"jsc\": true, \"group\": 1, "
-        "\"action\": \"red\", \"area\": \"법령검토\", \"reason\": \"...\", \"dup\": false}, ...]\n\n"
+        "\"dup\": false}, ...]\n\n"
         + "<sent>\n" + ("\n".join("- " + t for t in RECENT_SENT[-80:]) or "(없음)") + "\n</sent>\n\n"
         + "\n\n".join(blocks)
     )
@@ -348,10 +335,6 @@ def summarize(arts: list) -> None:
                     arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
                 if d.get("group") is not None:
                     arts[i]["group"] = str(d["group"])
-                if d.get("action") in ("red", "yellow"):
-                    arts[i]["action"] = d["action"]
-                    arts[i]["area"] = str(d.get("area") or "").strip()
-                    arts[i]["reason"] = str(d.get("reason") or "").strip()
     except Exception as e:
         detail = ""
         try:
@@ -416,69 +399,15 @@ def similar(t1: str, t2: str, th: float = 0.6) -> bool:
     return bool(x and y) and len(x & y) / min(len(x), len(y)) >= th
 
 
-def action_line(g: list) -> str:
-    """묶음 중 가장 높은 대응 표시 한 줄"""
-    best = next((x for x in g if x.get("action") == "red"), None) or \
-        next((x for x in g if x.get("action") == "yellow"), None)
-    if not best:
-        return ""
-    mark = "🔴 대응 검토" if best["action"] == "red" else "🟡 참고"
-    tail = " — " + html.escape(best["reason"]) if best.get("reason") else ""
-    area = " · " + html.escape(best["area"]) if best.get("area") else ""
-    return f"   {mark}{area}{tail}\n"
-
-
 def to_record(a: dict, now: dt.datetime) -> dict:
     return {"url": a["url"], "title": a["title"], "press": a["press"], "pub": a["pub"].isoformat(),
-            "summary": a["summary"], "group": a.get("group"), "found": now.isoformat(),
-            "action": a.get("action", ""), "area": a.get("area", ""), "reason": a.get("reason", "")}
+            "summary": a["summary"], "group": a.get("group"), "found": now.isoformat()}
 
 
 def from_record(r: dict) -> dict:
     r = dict(r)
     r["pub"] = dt.datetime.fromisoformat(r["pub"])
-    r.setdefault("action", ""), r.setdefault("area", ""), r.setdefault("reason", "")
     return r
-
-
-def format_daily(items: list, now: dt.datetime) -> list:
-    """오늘의 대응 검토 기사: 업무별로 정리"""
-    e = html.escape
-    reds = [x for x in items if x["action"] == "red"]
-    yellows = [x for x in items if x["action"] == "yellow"]
-    head = f"📋 <b>오늘의 대응 검토 기사</b> ({now:%m.%d.})\n"
-    if not items:
-        return [head + "오늘 대응 검토 기사 없음"]
-    head += f"🔴 {len(reds)}건 · 🟡 {len(yellows)}건\n"
-    sections = []
-    for area in AREAS + ("기타",):
-        mine = [x for x in reds if (x["area"].split("·")[0].strip() if x["area"] else "기타") == area
-                or (area == "기타" and x["area"] and x["area"].split("·")[0].strip() not in AREAS)]
-        if mine:
-            label = area
-            sections.append((label, mine))
-    if yellows:
-        sections.append(("참고", yellows))
-    blocks = []
-    for label, xs in sections:
-        b = f"\n<b>■ {e(label)}</b>"
-        for g in group_articles(xs):
-            a = g[0]
-            mark = "🔴" if a["action"] == "red" else "🟡"
-            area = f" [{e(a['area'])}]" if a["area"] and label != a["area"] else ""
-            b += (f"\n{mark} {e(a['title'])} ({e(a['press'])} {fmt_time(a['pub'], now)}){area}\n"
-                  + (f"   → {e(a['reason'])}\n" if a["reason"] else "")
-                  + f"   <a href=\"{e(a['url'], quote=True)}\">기사 보기</a>"
-                  + (f" · 같은 내용 {len(g) - 1}건" if len(g) > 1 else ""))
-        blocks.append(b)
-    msgs, cur = [], head
-    for b in blocks:
-        if len(cur) + len(b) > 3900:
-            msgs.append(cur)
-            cur = ""
-        cur += b + "\n"
-    msgs.append(cur)
-    return msgs
 
 
 def format_messages(arts: list, now: dt.datetime, header: str) -> list:
@@ -494,7 +423,6 @@ def format_messages(arts: list, now: dt.datetime, header: str) -> list:
             f"\n{n}. <b>{e(a['title'])}</b>\n"
             f"   {e(a['press'])} · {fmt_time(a['pub'], now)}\n"
             + (f"   ▸ {e(a['summary'])}\n" if a["summary"] else "")
-            + action_line(g)
             + f"   {link}"
         )
     msgs, cur = [], header
@@ -565,32 +493,17 @@ def main() -> int:
                        if now - dt.datetime.fromisoformat(r[1]) < dt.timedelta(hours=MAX_AGE_HOURS)]
     state["recent"] += [[a["title"], now.isoformat()] for a in arts]
 
-    # 대응 표시(🔴·🟡) 기사는 하루 목록용으로 기록
-    today = now.date().isoformat()
-    state.setdefault("daily", [])
-    state["daily"] = [x for x in state["daily"] if x.get("found", "")[:10] == today]
-    for a in arts:
-        if a.get("action"):
-            state["daily"].append(to_record(a, now))
-
-    # ① 중수청 기사 + 🔴 대응 검토 기사: 바로 발송
+    # ① 중수청 기사: 바로 발송
     urgent = [a for a in arts if a["priority"]]    # 건수 제한 없음(긴 경우 여러 통으로 나눠 발송)
-    red_now = [a for a in arts if not a["priority"] and a.get("action") == "red"]
     if urgent:
-        head = f"📰 <b>중수청 등 언론보도</b> · 중수청\n{now:%m.%d. %H:%M} 기준 신규 {len(urgent)}건\n"
+        head = f"⚡ <b>중수청 언론보도</b>\n{now:%m.%d. %H:%M} 기준 신규 {len(urgent)}건\n"
         for msg in format_messages(urgent, now, head):
             send_telegram(msg)
         print(f"중수청 {len(urgent)}건 즉시 발송")
-    if red_now:
-        head = f"📰 <b>중수청 등 언론보도</b> · 🔴 대응 검토\n{now:%m.%d. %H:%M} 기준 {len(red_now)}건\n"
-        for msg in format_messages(red_now, now, head):
-            send_telegram(msg)
-        print(f"🔴 대응 검토 {len(red_now)}건 즉시 발송")
-
-    # ② 공소청·형사사법 기사(🔴 제외): 대기 목록에 쌓았다가 마지막 모음 발송 후 DIGEST_MINUTES 지나면 발송
-    shown = urgent + red_now
+    # ② 공소청·형사사법 기사: 대기 목록에 쌓았다가 마지막 모음 발송 후 DIGEST_MINUTES 지나면 발송
+    shown = urgent
     for a in arts:
-        if not a["priority"] and a.get("action") != "red":
+        if not a["priority"]:
             if any(similar(a["title"], b["title"]) for b in shown):
                 continue                           # 방금 즉시 발송한 기사와 같은 내용이면 모음에서 제외
             state["pending"].append(to_record(a, now))
@@ -605,7 +518,7 @@ def main() -> int:
             p_["group"] = None if len({x.get("found") for x in state["pending"]}) > 1 else p_.get("group")
             items.append(p_)
         since = last.strftime("%H:%M") if last and last.date() == now.date() else "직전"
-        head = (f"📰 <b>중수청 등 언론보도</b> · 공소청·형사사법 등 모음\n"
+        head = (f"📚 <b>공소청·형사사법 모음</b>\n"
                 f"{since}~{now:%H:%M} 신규 {len(items)}건\n")
         for msg in format_messages(items, now, head):
             send_telegram(msg)
@@ -618,14 +531,7 @@ def main() -> int:
     if not arts:
         print("새 기사 없음")
 
-    # ③ 오늘의 대응 검토 기사: DAILY_HOUR 이후 첫 실행 때 하루 1회
-    if now.hour >= DAILY_HOUR and state.get("daily_sent") != today:
-        items = [from_record(x) for x in state["daily"]]
-        for msg in format_daily(items, now):
-            send_telegram(msg)
-        state["daily_sent"] = today
-        print(f"오늘의 대응 검토 기사 발송 (🔴·🟡 {len(items)}건)")
-
+    state.pop("daily", None), state.pop("daily_sent", None)   # 예전 대응 검토 기록 정리
     state["last_run"] = now.isoformat()
     save_seen(seen, now)                           # 발송 성공 후에만 기록
     save_state(state)
