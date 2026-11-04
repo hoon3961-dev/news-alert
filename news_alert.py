@@ -43,6 +43,15 @@ MAX_ITEMS = int(os.getenv("MAX_ITEMS", "20"))      # 한 번에 보낼 최대 �
 QUIET_HOURS = os.getenv("QUIET_HOURS", "")         # 예: "0-6" → 0~6시엔 보내지 않고 모아뒀다가 7시에 발송
 # 받지 않을 언론사(쉼표 구분). 언론사 이름이나 주소 일부가 들어가면 제외
 EXCLUDE_PRESS = [p.strip() for p in (os.getenv("EXCLUDE_PRESS") or "중수청일보").split(",") if p.strip()]
+# 제목·본문에 이 단어가 있으면 제외(쉼표 구분). 예: 동명이인 기사
+EXCLUDE_WORDS = [w.strip() for w in (os.getenv("EXCLUDE_WORDS") or "촬영감독,촬영 감독").split(",") if w.strip()]
+# 본문에 이 단어가 하나도 없으면 관련 없는 기사로 보고 제외 (동명이인 등 걸러내기)
+# AI 판단을 못 쓸 때는 이 단어가 제목·본문에 있는 기사만 보냄(잡음 방지)
+CORE_TERMS = ("중수청", "중대범죄수사청", "공소청", "수사·기소 분리", "수사-기소 분리", "수사 기소 분리",
+              "수사·기소분리", "형사사법체계", "형사사법 체계", "형사사법 개편", "형사사법개편",
+              "보완수사", "검찰청 폐지")
+CONTEXT_TERMS = ("중수청", "중대범죄수사청", "공소청", "검찰", "검사", "수사", "청장", "공수처",
+                 "경찰", "특검", "형사", "법무", "기소", "사법")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -179,6 +188,8 @@ def collect(seen: dict, now: dt.datetime) -> list:
                 continue
             if press and title.endswith(" - " + press):   # 구글 뉴스 제목 끝의 ' - 언론사' 제거
                 title = title[: -len(press) - 3].strip()
+            if press and title.endswith(":" + press):     # 제목 끝 ':언론사' 제거
+                title = title[: -len(press) - 1].strip()
             nt = norm_title(title)
             if nt in titles:                       # 같은 제목 중복 제거
                 seen[key] = now.isoformat()
@@ -210,6 +221,8 @@ def fetch_body(art: dict) -> str:
             r = requests.get(url, headers=UA, timeout=10)
             r.encoding = r.apparent_encoding or r.encoding
             text = trafilatura.extract(r.text) or ""
+            if re.search(r"Access Denied|permission to access|403 Forbidden|로봇이 아닙니다", text[:300]):
+                continue                           # 차단 페이지는 본문으로 쓰지 않음
             if len(text) > 200:
                 return text[:2500]
         except Exception:
@@ -222,10 +235,19 @@ def summarize(arts: list) -> None:
     for a in arts:
         a["body"] = fetch_body(a)
         a["relevant"] = True
+        text = a["title"] + " " + a["body"]
+        if any(w in text for w in EXCLUDE_WORDS):
+            a["relevant"] = False                  # 제외 단어
+        elif a["body"] and not any(t in text for t in CONTEXT_TERMS):
+            a["relevant"] = False                  # 수사·사법 관련 단어가 전혀 없는 기사(동명이인 등)
         # AI 키가 없을 때: 본문 첫머리 120자 정도를 요지로 사용
         first = re.sub(r"\s+", " ", a["body"])[:120]
         a["summary"] = (first.rsplit(" ", 1)[0] + "…") if len(first) == 120 else first
-    if not ANTHROPIC_KEY or not arts:
+    if not arts:
+        return
+    if not ANTHROPIC_KEY:
+        print("[경고] ANTHROPIC_API_KEY 없음 → 핵심 단어 기준으로만 거름", file=sys.stderr)
+        strict_filter(arts)
         return
 
     blocks = []
@@ -242,7 +264,7 @@ def summarize(arts: list) -> None:
         "② 수사·기소 분리 등 형사사법체계 개편, 수사권·관할 조정, 보완수사, 형소법 개정의 시행·혼란·평가\n"
         "③ 경찰(국수본)·공수처·특검·특별감찰관 등 유관 수사기관 기사 중 중수청·공소청이나 형사사법체계 개편과 연결된 것\n"
         "④ 위 주제를 다룬 사설·칼럼\n"
-        "단어만 우연히 겹친 기사(다른 나라 기관, 일반 사건사고 등)는 false.\n"
+        "단어만 우연히 겹친 기사(다른 나라 기관, 일반 사건사고 등)와 동명이인 기사(예: 촬영감독·연예인·운동선수 김지용)는 false.\n"
         "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true}, ...]\n\n"
         + "\n\n".join(blocks)
     )
@@ -263,9 +285,22 @@ def summarize(arts: list) -> None:
             if 0 <= i < len(arts):
                 if d.get("summary"):
                     arts[i]["summary"] = d["summary"].strip()
-                arts[i]["relevant"] = bool(d.get("relevant", True))
+                arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
     except Exception as e:
-        print(f"[경고] AI 요약 실패, 네이버 요약문 사용: {e}", file=sys.stderr)
+        detail = ""
+        try:
+            detail = r.text[:300]
+        except Exception:
+            pass
+        print(f"[경고] AI 요약 실패 → 핵심 단어 기준으로만 거름: {e} {detail}", file=sys.stderr)
+        strict_filter(arts)
+
+
+def strict_filter(arts: list) -> None:
+    """AI 판단을 못 쓸 때: 제목·본문에 핵심 단어가 없는 기사는 제외"""
+    for a in arts:
+        if a["relevant"] and not any(t in a["title"] + " " + a["body"] for t in CORE_TERMS):
+            a["relevant"] = False
 
 
 # ── 전송 ─────────────────────────────────────────────────────
