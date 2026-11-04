@@ -258,6 +258,9 @@ def fetch_body(art: dict) -> str:
     return ""
 
 
+RECENT_SENT: list = []                             # 최근 12시간 동안 보냈거나 모음 대기 중인 기사 제목(AI 중복 판단용)
+
+
 def summarize(arts: list) -> None:
     """각 기사에 summary(요지)와 relevant(관련 여부)를 채운다."""
     for a in arts:
@@ -275,6 +278,7 @@ def summarize(arts: list) -> None:
         a["priority"] = a["priority"] or any(t in a["body"][:300] for t in LEAD_TERMS)
         a["group"] = None
         a["action"], a["area"], a["reason"] = "", "", ""
+        a["dup"] = False
     if not arts:
         return
     if not ANTHROPIC_KEY:
@@ -313,8 +317,12 @@ def summarize(arts: list) -> None:
         "action은 \"red\"(위 업무와 직접 연결되어 사실확인·조치 검토가 필요), \"yellow\"(관련은 있으나 참고 수준), \"\"(해당 없음) 중 하나. "
         "단순 동정·일반 사건 보도는 \"\". red는 꼭 필요한 경우에만 쓴다.\n"
         "area는 위 업무 구분 중 해당하는 것(둘이면 '지침제정·기관협의'처럼), reason은 검토 포인트를 25자 내외 명사형으로(예: '조서 작성 기준 정합성 확인').\n"
+        "dup 판단: 맨 아래 sent 태그 안의 목록은 최근 이미 알림을 보낸 기사 제목이다. 기사가 목록 중 하나와 같은 사안(같은 사건·발표·발언·조치)이고 "
+        "새로운 진전(예: 고발→기소처럼 단계가 바뀜, 새 수치·새 당사자 입장 공개)이 없으면 dup=true. "
+        "표현만 다른 같은 내용(예: '고발건 배당'과 '수사 착수')은 dup=true.\n"
         "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true, \"jsc\": true, \"group\": 1, "
-        "\"action\": \"red\", \"area\": \"법령검토\", \"reason\": \"...\"}, ...]\n\n"
+        "\"action\": \"red\", \"area\": \"법령검토\", \"reason\": \"...\", \"dup\": false}, ...]\n\n"
+        + "<sent>\n" + ("\n".join("- " + t for t in RECENT_SENT[-80:]) or "(없음)") + "\n</sent>\n\n"
         + "\n\n".join(blocks)
     )
     try:
@@ -335,6 +343,7 @@ def summarize(arts: list) -> None:
                 if d.get("summary"):
                     arts[i]["summary"] = d["summary"].strip()
                 arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
+                arts[i]["dup"] = bool(d.get("dup", False))
                 if "jsc" in d:
                     arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
                 if d.get("group") is not None:
@@ -392,7 +401,7 @@ def dedupe(arts: list, seen: dict, state: dict, now: dt.datetime) -> list:
     out, urls = [], set()
     for a in arts:
         dup = (a["url"] in urls or ("u:" + a["url"]) in seen
-               or any(similar(a["title"], t, 0.8) for t in recent))
+               or any(similar(a["title"], t, 0.75) for t in recent))
         if dup:
             seen[a["key"]] = now.isoformat()
             continue
@@ -538,6 +547,9 @@ def main() -> int:
     arts = collect(seen, now, state.get("last_run", ""))
     decode_links(arts)
     arts = dedupe(arts, seen, state, now)
+    cutoff = now - dt.timedelta(hours=12)
+    RECENT_SENT[:] = [r[0] for r in state.get("recent", []) if dt.datetime.fromisoformat(r[1]) >= cutoff] + \
+        [p["title"] for p in state.get("pending", [])]
     for i in range(0, len(arts), BATCH):           # 기사가 많으면 나눠서 요약·판단
         summarize(arts[i:i + BATCH])
 
@@ -545,7 +557,10 @@ def main() -> int:
         seen[a["key"]] = now.isoformat()
         seen["t:" + norm_title(a["title"])] = now.isoformat()
         seen["u:" + a["url"]] = now.isoformat()
-    arts = [a for a in arts if a["relevant"]]
+    dups = [a for a in arts if a["relevant"] and a.get("dup")]
+    if dups:
+        print(f"이미 보낸 기사와 같은 사안 {len(dups)}건 제외: " + " / ".join(a["title"][:30] for a in dups))
+    arts = [a for a in arts if a["relevant"] and not a.get("dup")]
     state["recent"] = [r for r in state.get("recent", [])
                        if now - dt.datetime.fromisoformat(r[1]) < dt.timedelta(hours=MAX_AGE_HOURS)]
     state["recent"] += [[a["title"], now.isoformat()] for a in arts]
