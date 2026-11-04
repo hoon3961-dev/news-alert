@@ -219,7 +219,7 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
             if press and title.endswith(":" + press):     # 제목 끝 ':언론사' 제거
                 title = title[: -len(press) - 1].strip()
             nt = norm_title(title)
-            if nt in titles:                       # 같은 제목 중복 제거
+            if nt in titles or ("t:" + nt) in seen:  # 같은 제목 중복 제거(이전 실행에서 처리한 제목 포함)
                 seen[key] = now.isoformat()
                 continue
             titles.add(nt)
@@ -386,10 +386,25 @@ def group_articles(arts: list) -> list:
     return groups
 
 
-def similar(t1: str, t2: str) -> bool:
+def dedupe(arts: list, seen: dict, state: dict, now: dt.datetime) -> list:
+    """같은 기사가 출처 이름·주소만 바뀌어 다시 검색되는 경우 제거"""
+    recent = [r[0] for r in state.get("recent", [])] + [p["title"] for p in state.get("pending", [])]
+    out, urls = [], set()
+    for a in arts:
+        dup = (a["url"] in urls or ("u:" + a["url"]) in seen
+               or any(similar(a["title"], t, 0.8) for t in recent))
+        if dup:
+            seen[a["key"]] = now.isoformat()
+            continue
+        urls.add(a["url"])
+        out.append(a)
+    return out
+
+
+def similar(t1: str, t2: str, th: float = 0.6) -> bool:
     b = lambda t: {t[i:i + 2] for i in range(len(t) - 1)}
     x, y = b(norm_title(t1)), b(norm_title(t2))
-    return bool(x and y) and len(x & y) / min(len(x), len(y)) >= 0.6
+    return bool(x and y) and len(x & y) / min(len(x), len(y)) >= th
 
 
 def action_line(g: list) -> str:
@@ -522,12 +537,18 @@ def main() -> int:
     state = load_state()
     arts = collect(seen, now, state.get("last_run", ""))
     decode_links(arts)
+    arts = dedupe(arts, seen, state, now)
     for i in range(0, len(arts), BATCH):           # 기사가 많으면 나눠서 요약·판단
         summarize(arts[i:i + BATCH])
 
-    for a in arts:                                 # 무관 기사도 다시 안 보도록 기록
+    for a in arts:                                 # 무관 기사도 다시 안 보도록 기록(번호·제목·주소 모두)
         seen[a["key"]] = now.isoformat()
+        seen["t:" + norm_title(a["title"])] = now.isoformat()
+        seen["u:" + a["url"]] = now.isoformat()
     arts = [a for a in arts if a["relevant"]]
+    state["recent"] = [r for r in state.get("recent", [])
+                       if now - dt.datetime.fromisoformat(r[1]) < dt.timedelta(hours=MAX_AGE_HOURS)]
+    state["recent"] += [[a["title"], now.isoformat()] for a in arts]
 
     # 대응 표시(🔴·🟡) 기사는 하루 목록용으로 기록
     today = now.date().isoformat()
@@ -552,8 +573,11 @@ def main() -> int:
         print(f"🔴 대응 검토 {len(red_now)}건 즉시 발송")
 
     # ② 공소청·형사사법 기사(🔴 제외): 대기 목록에 쌓았다가 마지막 모음 발송 후 DIGEST_MINUTES 지나면 발송
+    shown = urgent + red_now
     for a in arts:
         if not a["priority"] and a.get("action") != "red":
+            if any(similar(a["title"], b["title"]) for b in shown):
+                continue                           # 방금 즉시 발송한 기사와 같은 내용이면 모음에서 제외
             state["pending"].append(to_record(a, now))
     last = dt.datetime.fromisoformat(state["last_digest"]) if state["last_digest"] else None
     due = last is None or now - last >= dt.timedelta(minutes=DIGEST_MINUTES)
