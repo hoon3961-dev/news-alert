@@ -311,6 +311,11 @@ def fetch_body(art: dict) -> str:
             text = trafilatura.extract(r.text) or ""
             if re.search(r"Access Denied|permission to access|403 Forbidden|로봇이 아닙니다", text[:300]):
                 continue                           # 차단 페이지는 본문으로 쓰지 않음
+            try:                                   # 기사 페이지에 적힌 작성일(구글 날짜가 틀릴 때 대비)
+                meta = trafilatura.extract_metadata(r.text)
+                art["page_date"] = (meta.date if meta and meta.date else "")[:10]
+            except Exception:
+                art["page_date"] = ""
             if len(text) > 200:
                 return text[:2500]
         except Exception:
@@ -338,6 +343,11 @@ def summarize(arts: list, _again: bool = False) -> None:
         a["priority"] = a["priority"] or any(t in a["body"][:300] for t in LEAD_TERMS)
         a["group"] = None
         a["dup"] = False
+        pd_ = a.get("page_date", "")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", pd_ or "") and \
+                dt.date.fromisoformat(pd_) < (dt.datetime.now(KST).date() - dt.timedelta(days=2)):
+            a["relevant"] = False                  # 기사 페이지상 작성일이 오래된 기사(구글 날짜 오류)
+            a["old"] = True
     if not arts:
         return
     if not ANTHROPIC_KEY:
@@ -352,6 +362,9 @@ def summarize(arts: list, _again: bool = False) -> None:
 
     prompt = (
         "다음은 중대범죄수사청(중수청) 언론동향 모니터링을 위해 수집한 기사들이다.\n"
+        f"오늘은 {dt.datetime.now(KST):%Y-%m-%d}이다. 중수청·공소청은 2026-10-02 출범, 김지용 청장은 2026-10-16 임명재가·10-19 임명장 수여.\n"
+        "old 판단: 기사 내용이 이미 며칠 지난 사건을 처음 알리는 당시 보도(예: 청장 임명 재가, 출범 첫날 소식 등)여서 "
+        "오늘 기준 2일 넘게 지난 기사로 보이면 old=true. 지난 일을 다루더라도 오늘 새로 쓴 분석·후속 기사면 false.\n"
         "각 기사마다 공무원 내부 보고용으로 핵심 요지를 1~2문장, 개조식 '~함/~임' 체로 요약하라. "
         "추측이나 평가는 넣지 말고 기사에 나온 사실만 쓴다.\n"
         "관련성 판단: 다음 중 하나에 해당하면 relevant=true, 아니면 false로 표시하라.\n"
@@ -372,7 +385,7 @@ def summarize(arts: list, _again: bool = False) -> None:
         "새로운 진전(예: 고발→기소처럼 단계가 바뀜, 새 수치·새 당사자 입장 공개)이 없으면 dup=true. "
         "표현만 다른 같은 내용(예: '고발건 배당'과 '수사 착수')은 dup=true.\n"
         "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true, \"jsc\": true, \"group\": 1, "
-        "\"dup\": false}, ...]\n\n"
+        "\"dup\": false, \"old\": false}, ...]\n\n"
         + "<sent>\n" + ("\n".join("- " + t for t in RECENT_SENT[-80:]) or "(없음)") + "\n</sent>\n\n"
         + "\n\n".join(blocks)
     )
@@ -424,6 +437,9 @@ def summarize(arts: list, _again: bool = False) -> None:
                 arts[i]["summary"] = d["summary"].strip()
             arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
             arts[i]["dup"] = bool(d.get("dup", False))
+            if d.get("old"):
+                arts[i]["relevant"] = False
+                arts[i]["old"] = True
             if "jsc" in d:
                 arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
             if d.get("group") is not None:
@@ -570,6 +586,9 @@ def main() -> int:
         seen[a["key"]] = now.isoformat()
         seen["t:" + norm_title(a["title"])] = now.isoformat()
         seen["u:" + a["url"]] = now.isoformat()
+    olds = [a for a in arts if a.get("old")]
+    if olds:
+        print(f"지난 기사 {len(olds)}건 제외: " + " / ".join(a["title"][:30] for a in olds))
     dups = [a for a in arts if a["relevant"] and a.get("dup")]
     if dups:
         print(f"이미 보낸 기사와 같은 사안 {len(dups)}건 제외: " + " / ".join(a["title"][:30] for a in dups))
