@@ -159,6 +159,14 @@ def norm_title(t: str) -> str:
     return re.sub(r"[\W_]+", "", re.sub(r"\[[^\]]*\]", "", t)).lower()
 
 
+SCOOP_RE = re.compile(r"^\s*(?:[\[\(【〈<][^\]\)】〉>]{0,10}단독[^\]\)】〉>]{0,10}[\]\)】〉>]|단독\s*[:：\-·])")
+
+
+def is_scoop(title: str) -> bool:
+    """제목 맨 앞에 [단독]·(단독)·[속보·단독] 같은 표시가 붙은 기사 → 같은 사안이어도 중복으로 거르지 않음"""
+    return bool(SCOOP_RE.match(title or ""))
+
+
 def in_quiet_hours(now: dt.datetime) -> bool:
     m = re.fullmatch(r"\s*(\d{1,2})\s*-\s*(\d{1,2})\s*", QUIET_HOURS)
     if not m:
@@ -383,7 +391,7 @@ def summarize(arts: list, _again: bool = False) -> None:
         "group: 같은 사안(같은 사건·발언·발표)을 다룬 기사끼리 같은 숫자를 주고, 다른 사안은 다른 숫자를 준다.\n"
         "dup 판단: 맨 아래 sent 태그 안의 목록은 최근 이미 알림을 보낸 기사 제목이다. 기사가 목록 중 하나와 같은 사안(같은 사건·발표·발언·조치)이고 "
         "새로운 진전(예: 고발→기소처럼 단계가 바뀜, 새 수치·새 당사자 입장 공개)이 없으면 dup=true. "
-        "표현만 다른 같은 내용(예: '고발건 배당'과 '수사 착수')은 dup=true.\n"
+        "표현만 다른 같은 내용(예: '고발건 배당'과 '수사 착수')은 dup=true. 단, 제목이 [단독]으로 시작하는 기사는 항상 dup=false.\n"
         "출력은 JSON 배열만: [{\"id\": 0, \"summary\": \"...\", \"relevant\": true, \"jsc\": true, \"group\": 1, "
         "\"dup\": false, \"old\": false}, ...]\n\n"
         + "<sent>\n" + ("\n".join("- " + t for t in RECENT_SENT[-80:]) or "(없음)") + "\n</sent>\n\n"
@@ -436,7 +444,7 @@ def summarize(arts: list, _again: bool = False) -> None:
             if d.get("summary"):
                 arts[i]["summary"] = d["summary"].strip()
             arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
-            arts[i]["dup"] = bool(d.get("dup", False))
+            arts[i]["dup"] = bool(d.get("dup", False)) and not is_scoop(arts[i]["title"])   # [단독]은 중복 판단 제외
             if d.get("old"):
                 arts[i]["relevant"] = False
                 arts[i]["old"] = True
@@ -484,8 +492,9 @@ def dedupe(arts: list, seen: dict, state: dict, now: dt.datetime) -> list:
     recent = [r[0] for r in state.get("recent", [])] + [p["title"] for p in state.get("pending", [])]
     out, urls = [], set()
     for a in arts:
+        th = 0.95 if is_scoop(a["title"]) else 0.75   # [단독]은 사실상 같은 제목(재검색)일 때만 중복 처리
         dup = (a["url"] in urls or ("u:" + a["url"]) in seen
-               or any(similar(a["title"], t, 0.75) for t in recent))
+               or any(similar(a["title"], t, th) for t in recent))
         if dup:
             seen[a["key"]] = now.isoformat()
             continue
@@ -592,6 +601,9 @@ def main() -> int:
     dups = [a for a in arts if a["relevant"] and a.get("dup")]
     if dups:
         print(f"이미 보낸 기사와 같은 사안 {len(dups)}건 제외: " + " / ".join(a["title"][:30] for a in dups))
+    scoops = [a for a in arts if a["relevant"] and is_scoop(a["title"])]
+    if scoops:
+        print(f"[단독] {len(scoops)}건은 중복 판단 없이 통과: " + " / ".join(a["title"][:30] for a in scoops))
     arts = [a for a in arts if a["relevant"] and not a.get("dup")]
     state["recent"] = [r for r in state.get("recent", [])
                        if now - dt.datetime.fromisoformat(r[1]) < dt.timedelta(hours=MAX_AGE_HOURS)]
