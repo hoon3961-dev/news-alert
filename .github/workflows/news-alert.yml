@@ -40,6 +40,10 @@ jobs:
           EXCLUDE_PRESS: ${{ vars.EXCLUDE_PRESS }}
           EXCLUDE_WORDS: ${{ vars.EXCLUDE_WORDS }}
           QUERIES: ${{ vars.QUERIES }}
+          NAVER_APIHUB_KEY_ID: ${{ secrets.NAVER_APIHUB_KEY_ID }}
+          NAVER_APIHUB_KEY: ${{ secrets.NAVER_APIHUB_KEY }}
+          NAVER_SEARCH: ${{ vars.NAVER_SEARCH }}
+          NAVER_QUERIES: ${{ vars.NAVER_QUERIES }}
         run: python news_alert.py
 
       - name: 발송 기록 저장
