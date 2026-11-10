@@ -35,6 +35,20 @@ DEFAULT_QUERIES = ",".join([
     "공수처",
 ])
 QUERIES = [q.strip() for q in (os.getenv("QUERIES") or DEFAULT_QUERIES).split(",") if q.strip()]
+# ── 네이버 뉴스 검색(NAVER API HUB). 키가 없거나 NAVER_SEARCH=off 이면 구글만 사용 ──
+NAVER_ID = (os.getenv("NAVER_APIHUB_KEY_ID") or "").strip()
+NAVER_KEY = (os.getenv("NAVER_APIHUB_KEY") or "").strip()
+NAVER_ON = ((os.getenv("NAVER_SEARCH") or "on").strip().lower() != "off") and bool(NAVER_ID and NAVER_KEY)
+NAVER_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+NAVER_DISPLAY = int(os.getenv("NAVER_DISPLAY") or "100")   # 한 번에 받는 건수(최대 100)
+_NAVER_FAILS = [0]                                 # 네이버 호출이 3번 실패하면 이번 실행에서는 더 부르지 않음
+DROPPED: list = []                                 # 이번 실행에서 거른 기사 [시각, 이유, 언론사, 제목] → state.json에 보관
+def _naver_queries() -> list:
+    raw = os.getenv("NAVER_QUERIES")
+    qs = [q.strip() for q in raw.split(",") if q.strip()] if raw else \
+        [x.strip() for q in QUERIES for x in re.split(r"\s+OR\s+", q) if x.strip()]
+    return list(dict.fromkeys(qs))
+NAVER_QUERIES = _naver_queries()
 PRIORITY_TERMS = ("중수청", "중대범죄수사청", "김지용", "임은정")   # 이 단어가 제목에 있으면 맨 위에
 SEEN_FILE = os.getenv("SEEN_FILE", "seen.json")    # 이미 보낸 기사 기록
 STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모음 대기 목록
@@ -167,6 +181,11 @@ def is_scoop(title: str) -> bool:
     return bool(SCOOP_RE.match(title or ""))
 
 
+def drop(reason: str, press: str, title: str, now: dt.datetime) -> None:
+    """걸러낸 기사와 이유를 기록(state.json의 dropped, 나중에 '왜 안 왔나' 확인용)"""
+    DROPPED.append([now.isoformat(), reason, press or "", (title or "")[:90]])
+
+
 def in_quiet_hours(now: dt.datetime) -> bool:
     m = re.fullmatch(r"\s*(\d{1,2})\s*-\s*(\d{1,2})\s*", QUIET_HOURS)
     if not m:
@@ -231,8 +250,51 @@ def google_search(query: str) -> list:
     return items
 
 
+def naver_search(query: str) -> list:
+    """네이버 뉴스 검색(최신순) → 구글 결과와 같은 형식의 목록"""
+    if _NAVER_FAILS[0] >= 3:
+        return []
+    r = None
+    try:
+        r = requests.get(
+            NAVER_URL,
+            params={"query": query, "display": NAVER_DISPLAY, "start": 1, "sort": "date"},
+            headers={"X-NCP-APIGW-API-KEY-ID": NAVER_ID, "X-NCP-APIGW-API-KEY": NAVER_KEY,
+                     "Accept": "application/json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        _NAVER_FAILS[0] += 1
+        detail = ""
+        if r is not None:
+            detail = f" (응답 {r.status_code}: {r.text[:150]!r})"
+        print(f"[경고] 네이버 검색 실패 {_NAVER_FAILS[0]}/3{detail}: {e}", file=sys.stderr)
+        if _NAVER_FAILS[0] >= 3:
+            print("[경고] 네이버 검색이 계속 실패해 이번 실행에서는 구글만 사용합니다. "
+                  "(키·한도·API HUB 신청 상태 확인)", file=sys.stderr)
+        raise
+    items = []
+    for it in data.get("items", []) if isinstance(data, dict) else []:
+        orig = (it.get("originallink") or "").strip()
+        link = orig or (it.get("link") or "").strip()
+        if not link:
+            continue
+        items.append({
+            "title": clean(it.get("title", "")),
+            "link": link,
+            "guid": "nv:" + link,
+            "pubDate": it.get("pubDate", ""),
+            "source": press_name(link),
+            "source_url": link,
+        })
+    return items
+
+
 def decode_links(arts: list) -> None:
     """구글 뉴스 중계 링크를 실제 언론사 주소로 변환 (실패하면 구글 링크 유지)"""
+    arts = [a for a in arts if "news.google.com" in a["url"]]   # 네이버 결과는 이미 원문 주소
     if not arts:
         return
     try:
@@ -259,11 +321,15 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
     else:
         max_age = dt.timedelta(hours=MAX_AGE_HOURS)
     found, titles = {}, set()
-    for q in QUERIES:
+    sources = [(google_search, q) for q in QUERIES]
+    if NAVER_ON:
+        sources += [(naver_search, q) for q in NAVER_QUERIES]
+    for fn, q in sources:
         try:
-            items = google_search(q)
+            items = fn(q)
         except Exception as e:
-            print(f"[경고] '{q}' 검색 실패: {e}", file=sys.stderr)
+            if fn is google_search:
+                print(f"[경고] '{q}' 검색 실패: {e}", file=sys.stderr)
             continue
         for it in items:
             key = it["guid"]
@@ -281,6 +347,8 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
             if (any(x in press or x in it["source_url"] or title.endswith(x) for x in EXCLUDE_PRESS)
                     or not press_allowed(press, it["source_url"])):
                 seen[key] = now.isoformat()        # 제외 언론사
+                if any(t in title for t in CORE_TERMS + PRIORITY_TERMS):
+                    drop(f"언론사 제외({press_name(it['source_url']) or press})", press or press_name(it["source_url"]), title, now)
                 continue
             if press and title.endswith(" - " + press):   # 구글 뉴스 제목 끝의 ' - 언론사' 제거
                 title = title[: -len(press) - 3].strip()
@@ -299,6 +367,9 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
                 "press": press or press_name(it["source_url"]),
                 "priority": any(t in title for t in PRIORITY_TERMS),
             }
+    n_nv = sum(1 for k in found if k.startswith("nv:"))
+    print(f"검색 후보 {len(found)}건 (구글 {len(found) - n_nv}건 · 네이버 {n_nv}건)"
+          + ("" if NAVER_ON else " · 네이버 검색 꺼짐"))
     arts = sorted(found.values(), key=lambda a: (not a["priority"], -a["pub"].timestamp()))
     return arts
 
@@ -342,8 +413,10 @@ def summarize(arts: list, _again: bool = False) -> None:
         text = a["title"] + " " + a["body"]
         if any(w in text for w in EXCLUDE_WORDS):
             a["relevant"] = False                  # 제외 단어
+            a["why"] = "제외 단어"
         elif a["body"] and not any(t in text for t in CONTEXT_TERMS):
             a["relevant"] = False                  # 수사·사법 관련 단어가 전혀 없는 기사(동명이인 등)
+            a["why"] = "수사·사법 단어 없음"
         # AI 키가 없을 때: 본문 첫머리 120자 정도를 요지로 사용
         first = re.sub(r"\s+", " ", a["body"])[:120]
         a["summary"] = (first.rsplit(" ", 1)[0] + "…") if len(first) == 120 else first
@@ -356,6 +429,7 @@ def summarize(arts: list, _again: bool = False) -> None:
                 dt.date.fromisoformat(pd_) < (dt.datetime.now(KST).date() - dt.timedelta(days=2)):
             a["relevant"] = False                  # 기사 페이지상 작성일이 오래된 기사(구글 날짜 오류)
             a["old"] = True
+            a["why"] = f"작성일 오래됨({pd_})"
     if not arts:
         return
     if not ANTHROPIC_KEY:
@@ -443,11 +517,14 @@ def summarize(arts: list, _again: bool = False) -> None:
         if 0 <= i < len(arts):
             if d.get("summary"):
                 arts[i]["summary"] = d["summary"].strip()
+            if arts[i]["relevant"] and not bool(d.get("relevant", True)):
+                arts[i]["why"] = "AI 관련 없음"
             arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
             arts[i]["dup"] = bool(d.get("dup", False)) and not is_scoop(arts[i]["title"])   # [단독]은 중복 판단 제외
             if d.get("old"):
                 arts[i]["relevant"] = False
                 arts[i]["old"] = True
+                arts[i]["why"] = "AI 지난 기사"
             if "jsc" in d:
                 arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
             if d.get("group") is not None:
@@ -459,6 +536,7 @@ def strict_filter(arts: list) -> None:
     for a in arts:
         if a["relevant"] and not any(t in a["title"] + " " + a["body"] for t in CORE_TERMS):
             a["relevant"] = False
+            a["why"] = "핵심 단어 없음(AI 실패 시)"
 
 
 # ── 전송 ─────────────────────────────────────────────────────
@@ -497,6 +575,7 @@ def dedupe(arts: list, seen: dict, state: dict, now: dt.datetime) -> list:
                or any(similar(a["title"], t, th) for t in recent))
         if dup:
             seen[a["key"]] = now.isoformat()
+            drop("중복(같은 주소·비슷한 제목)", a["press"], a["title"], now)
             continue
         urls.add(a["url"])
         out.append(a)
@@ -604,6 +683,11 @@ def main() -> int:
     scoops = [a for a in arts if a["relevant"] and is_scoop(a["title"])]
     if scoops:
         print(f"[단독] {len(scoops)}건은 중복 판단 없이 통과: " + " / ".join(a["title"][:30] for a in scoops))
+    for a in arts:                                 # 거른 이유 기록
+        if not a["relevant"]:
+            drop(a.get("why") or "관련 없음", a["press"], a["title"], now)
+        elif a.get("dup"):
+            drop("AI 중복(이미 보낸 사안)", a["press"], a["title"], now)
     arts = [a for a in arts if a["relevant"] and not a.get("dup")]
     state["recent"] = [r for r in state.get("recent", [])
                        if now - dt.datetime.fromisoformat(r[1]) < dt.timedelta(hours=MAX_AGE_HOURS)]
@@ -649,6 +733,9 @@ def main() -> int:
 
     state.pop("daily", None), state.pop("daily_sent", None)   # 예전 대응 검토 기록 정리
     state["last_run"] = now.isoformat()
+    keep = now - dt.timedelta(hours=48)            # 거른 기사 기록은 48시간·최대 300건만 보관
+    state["dropped"] = ([r for r in state.get("dropped", []) if dt.datetime.fromisoformat(r[0]) >= keep]
+                        + DROPPED)[-300:]
     save_seen(seen, now)                           # 발송 성공 후에만 기록
     save_state(state)
     return 0
