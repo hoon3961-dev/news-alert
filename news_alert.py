@@ -340,13 +340,15 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
             except (TypeError, ValueError):
                 pub = now
             if now - pub > max_age:
-                seen[key] = now.isoformat()        # 지난 기사는 이후에도 보내지 않음
+                if not key.startswith("nv:"):
+                    seen[key] = now.isoformat()    # 지난 기사는 이후에도 보내지 않음(네이버는 기록 안 함: 매번 걸러져 용량만 커짐)
                 continue
             press = it["source"]
             title = html.unescape(it["title"]).strip()
             if (any(x in press or x in it["source_url"] or title.endswith(x) for x in EXCLUDE_PRESS)
                     or not press_allowed(press, it["source_url"])):
-                seen[key] = now.isoformat()        # 제외 언론사
+                if not key.startswith("nv:"):
+                    seen[key] = now.isoformat()    # 제외 언론사
                 if any(t in title for t in CORE_TERMS + PRIORITY_TERMS):
                     drop(f"언론사 제외({press_name(it['source_url']) or press})", press or press_name(it["source_url"]), title, now)
                 continue
@@ -356,7 +358,8 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
                 title = title[: -len(press) - 1].strip()
             nt = norm_title(title)
             if nt in titles or ("t:" + nt) in seen:  # 같은 제목 중복 제거(이전 실행에서 처리한 제목 포함)
-                seen[key] = now.isoformat()
+                if not key.startswith("nv:"):
+                    seen[key] = now.isoformat()
                 continue
             titles.add(nt)
             found[key] = {
@@ -425,7 +428,9 @@ def summarize(arts: list, _again: bool = False) -> None:
         a["group"] = None
         a["dup"] = False
         pd_ = a.get("page_date", "")
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", pd_ or "") and \
+        # 기사 페이지에서 '월'만 읽고 일을 1일로 채운 날짜(예: 2026-11-01)가 많아 1일은 믿지 않음. 네이버는 시각이 정확해 검사 안 함
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", pd_ or "") and not pd_.endswith("-01") \
+                and not a["key"].startswith("nv:") and \
                 dt.date.fromisoformat(pd_) < (dt.datetime.now(KST).date() - dt.timedelta(days=2)):
             a["relevant"] = False                  # 기사 페이지상 작성일이 오래된 기사(구글 날짜 오류)
             a["old"] = True
@@ -734,8 +739,14 @@ def main() -> int:
     state.pop("daily", None), state.pop("daily_sent", None)   # 예전 대응 검토 기록 정리
     state["last_run"] = now.isoformat()
     keep = now - dt.timedelta(hours=48)            # 거른 기사 기록은 48시간·최대 300건만 보관
-    state["dropped"] = ([r for r in state.get("dropped", []) if dt.datetime.fromisoformat(r[0]) >= keep]
-                        + DROPPED)[-300:]
+    old_d = [r for r in state.get("dropped", []) if dt.datetime.fromisoformat(r[0]) >= keep]
+    have = {(r[1], r[3]) for r in old_d}
+    new_d = []
+    for r in DROPPED:                              # 네이버는 매 실행 다시 걸러지므로 같은 기록은 한 번만
+        if (r[1], r[3]) not in have:
+            have.add((r[1], r[3]))
+            new_d.append(r)
+    state["dropped"] = (old_d + new_d)[-300:]
     save_seen(seen, now)                           # 발송 성공 후에만 기록
     save_state(state)
     return 0
