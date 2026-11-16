@@ -101,6 +101,8 @@ ALLOWED_PRESS = {
     "경기일보": "kyeonggi.com", "중부일보": "joongboo.com", "기호일보": "kihoilbo.co.kr", "인천일보": "incheonilbo.com",
     "강원일보": "kwnews.co.kr", "강원도민일보": "kado.net", "제주일보": "jejunews.com", "한라일보": "ihalla.com",
     "제민일보": "jemin.com", "산경일보": "", "동방일보": "", "대한일보": "",
+    # 11.12. 스크랩 대조 후 추가(도메인 미확인은 이름만 등록 — 구글 표기와 일치해야 함)
+    "울산신문": "ulsanpress.net", "전라일보": "jeollailbo.com", "광주타임스": "", "JCN울산중앙방송": "", "알쓸신문": "",
 }
 # 이름이 다르게 표시되는 경우(구글 뉴스 표기)
 PRESS_ALIASES = {"서울Pn": "서울신문", "JoongAng": "중앙일보", "Yonhap": "연합뉴스", "TV조선뉴스": "TV조선",
@@ -132,6 +134,15 @@ CORE_TERMS = ("중수청", "중대범죄수사청", "공소청", "수사·기소
 CONTEXT_TERMS = ("중수청", "중대범죄수사청", "공소청", "검찰", "검사", "수사", "청장", "공수처",
                  "경찰", "특검", "형사", "법무", "기소", "사법")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
+
+# ── 음성 브리핑(중수청 기사만, 평일 아침·오후) ──────────────────
+# AUDIO=off 로 끄기. AUDIO_TIMES: 만드는 시각(쉼표 구분). 직전 브리핑 이후 보낸 중수청 기사를 담음
+AUDIO_ON = (os.getenv("AUDIO") or "on").strip().lower() != "off"
+AUDIO_TIMES = os.getenv("AUDIO_TIMES") or "07:10,17:00"
+AUDIO_MAX = int(os.getenv("AUDIO_MAX") or "10")          # 한 번에 읽을 최대 사안 수
+AUDIO_VOICE = (os.getenv("AUDIO_VOICE") or "").strip()  # 비우면 기본 목소리
+AUDIO_TEST = (os.getenv("AUDIO_TEST") or "").strip().lower() == "true"   # Actions에서 수동 시험
+GOOGLE_TTS_KEY = (os.getenv("GOOGLE_TTS_KEY") or "").strip()            # 있으면 구글 음성 사용
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -595,7 +606,8 @@ def similar(t1: str, t2: str, th: float = 0.6) -> bool:
 
 def to_record(a: dict, now: dt.datetime) -> dict:
     return {"url": a["url"], "title": a["title"], "press": a["press"], "pub": a["pub"].isoformat(),
-            "summary": a["summary"], "group": a.get("group"), "found": now.isoformat()}
+            "summary": a["summary"], "group": a.get("group"), "found": now.isoformat(),
+            "jsc": bool(a.get("priority"))}
 
 
 def from_record(r: dict) -> dict:
@@ -652,6 +664,180 @@ def send_telegram(text: str) -> None:
     r.raise_for_status()
 
 
+
+# ── 음성 브리핑 ───────────────────────────────────────────────
+def _kr_holidays():
+    try:
+        import holidays
+        return holidays.KR(years=range(dt.date.today().year - 1, dt.date.today().year + 2))
+    except Exception:
+        return {}
+
+
+def audio_due(state: dict, now: dt.datetime):
+    """만들 차례면 '아침'/'오후'(시험이면 '시험'), 아니면 None. 평일·비공휴일만, 예정 시각부터 3시간 안"""
+    if AUDIO_TEST:
+        return "시험"
+    if not AUDIO_ON or now.weekday() >= 5 or now.date() in _kr_holidays():
+        return None
+    last = dt.datetime.fromisoformat(state["last_audio"]) if state.get("last_audio") else None
+    for t in AUDIO_TIMES.split(","):
+        m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", t)
+        if not m:
+            continue
+        slot = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        if slot <= now < slot + dt.timedelta(hours=3) and (last is None or last < slot):
+            return "아침" if slot.hour < 12 else "오후"
+    return None
+
+
+def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime, more: int) -> str:
+    """AI가 뉴스 앵커 원고로 정리. 실패하면 요약을 그대로 이어 붙임"""
+    items = []
+    for n, g in enumerate(groups, 1):
+        a = g[0]
+        others = ", ".join(x["press"] for x in g[1:])
+        items.append(f"[{n}] 제목: {a['title']}\n언론사: {a['press']}" + (f" (같은 내용: {others})" if others else "")
+                     + f"\n요약: {a['summary'] or '(요약 없음)'}")
+    intro = f"{now.month}월 {now.day}일 {label} 중수청 언론보도 브리핑입니다. 인공지능이 정리해 읽어 드립니다."
+    outro = (f"이 밖에 중수청 관련 기사 {more}건이 더 있습니다. " if more else "") + "이상, 중수청 언론보도 브리핑이었습니다."
+    if ANTHROPIC_KEY:
+        prompt = (
+            "아래 기사들로 라디오 뉴스 브리핑 원고를 써라. 듣는 사람은 중대범죄수사청(중수청) 직원이다.\n"
+            f"- 첫 문장은 그대로: {intro}\n- 마지막 문장은 그대로: {outro}\n"
+            "- 기사 순서대로, 한 사안당 2~3문장. 첫 문장에 언론사를 밝힌다(예: 연합뉴스에 따르면). 같은 내용 언론사가 있으면 '여러 언론이 함께 보도했습니다'처럼 짧게.\n"
+            "- 제목·요약에 없는 사실·숫자·평가를 덧붙이지 말 것. 추측 금지.\n"
+            "- 귀로 듣기 좋게: 괄호·따옴표·대괄호·기호(·, →, ~) 쓰지 말고 문장으로 풀어 쓴다. [단독]은 '단독 보도입니다'로. "
+            "날짜는 '11월 16일'처럼, 기관 약칭은 처음 나올 때만 풀어 쓴다(중수청은 그대로 써도 됨).\n"
+            "- 사안 사이에는 '다음 소식입니다' 같은 연결 문장을 쓴다. 전체 1,800자 이내.\n"
+            "- 원고 문장만 출력(제목·번호·설명 없이).\n\n" + "\n\n".join(items)
+        )
+        for attempt in range(2):
+            try:
+                r = requests.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                             "content-type": "application/json"},
+                    json={"model": CLAUDE_MODEL, "max_tokens": 3000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                    timeout=120,
+                )
+                r.raise_for_status()
+                text = "".join(c.get("text", "") for c in r.json().get("content", [])).strip()
+                if len(text) > 50:
+                    return text
+            except Exception as e:
+                print(f"[음성 원고 AI 오류] {type(e).__name__}: {e}", file=sys.stderr)
+                time.sleep(5)
+    parts = [intro]
+    for n, g in enumerate(groups, 1):
+        a = g[0]
+        parts.append(("첫 소식입니다. " if n == 1 else "다음 소식입니다. ")
+                     + f"{a['press']} 보도입니다. {a['title']}. {a['summary'] or ''}")
+    parts.append(outro)
+    return "\n".join(parts)
+
+
+def speakable(text: str) -> str:
+    text = re.sub(r"[\[\]【】〈〉<>\"“”‘’'「」]", " ", text)
+    text = text.replace("·", ", ").replace("→", ", ").replace("…", ", ")
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def tts_mp3(text: str, path: str) -> str:
+    """원고 → mp3. GOOGLE_TTS_KEY가 있으면 구글, 없으면 edge-tts(무료). 쓴 엔진 이름을 돌려줌"""
+    if GOOGLE_TTS_KEY:
+        import base64
+        voice = AUDIO_VOICE or "ko-KR-Neural2-A"
+        chunks, cur = [], ""
+        for sent in re.split(r"(?<=[.?!다요])\s+", text):     # 구글은 한 번에 5,000바이트까지
+            if cur and len((cur + " " + sent).encode()) > 4500:
+                chunks.append(cur)
+                cur = sent
+            else:
+                cur = (cur + " " + sent).strip()
+        if cur:
+            chunks.append(cur)
+        with open(path, "wb") as f:
+            for c in chunks:
+                r = requests.post(
+                    "https://texttospeech.googleapis.com/v1/text:synthesize",
+                    params={"key": GOOGLE_TTS_KEY},
+                    json={"input": {"text": c}, "voice": {"languageCode": "ko-KR", "name": voice},
+                          "audioConfig": {"audioEncoding": "MP3"}},
+                    timeout=60,
+                )
+                if not r.ok:
+                    raise RuntimeError(f"구글 음성 오류 {r.status_code}: {r.text[:200]}")
+                f.write(base64.b64decode(r.json()["audioContent"]))
+        return f"구글 {voice}"
+    import asyncio
+    import edge_tts
+    voice = AUDIO_VOICE or "ko-KR-SunHiNeural"
+    asyncio.run(edge_tts.Communicate(text, voice).save(path))
+    if os.path.getsize(path) < 1000:
+        raise RuntimeError("음성 파일이 비어 있음")
+    return f"edge {voice}"
+
+
+def send_audio(path: str, caption: str, title: str) -> None:
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendAudio"
+    data = {"chat_id": TG_CHAT.strip(), "caption": caption, "parse_mode": "HTML",
+            "title": title, "performer": "중수청 브리핑"}
+    for _ in range(2):
+        with open(path, "rb") as f:
+            r = requests.post(url, data=data, files={"audio": (os.path.basename(path), f, "audio/mpeg")}, timeout=120)
+        if r.ok:
+            return
+        print(f"[텔레그램 음성 오류] {r.status_code}: {r.text[:200]}", file=sys.stderr)
+        data.pop("parse_mode", None)               # 서식 문제일 수 있어 서식 없이 다시
+        data["caption"] = html.unescape(re.sub(r"</?b>", "", caption))
+    r.raise_for_status()
+
+
+def audio_briefing(state: dict, now: dt.datetime) -> None:
+    label = audio_due(state, now)
+    if not label:
+        return
+    since = dt.datetime.fromisoformat(state["audio_cut"]) if state.get("audio_cut") else now - dt.timedelta(hours=14)
+    recs = [from_record(r) for r in state.get("audio_log", []) if dt.datetime.fromisoformat(r["found"]) > since]
+    for r in recs:                                 # 실행마다 AI 묶음 번호가 달라서 실행 시각과 함께 구분
+        r["group"] = f"{r['found']}|{r['group']}" if r.get("group") is not None else None
+    wd = "월화수목금토일"
+    span = (f"{since:%H:%M}~{now:%H:%M}" if since.date() == now.date() else
+            f"{since:%m.%d.}({wd[since.weekday()]}) {since:%H:%M} ~ {now:%m.%d.}({wd[now.weekday()]}) {now:%H:%M}")
+    head = f"🎧 <b>중수청 {label} 브리핑</b>\n{span} 중수청 기사 "
+    if not recs:
+        send_telegram(head + "없음")
+        print(f"음성 브리핑({label}): 새 중수청 기사 없음")
+    else:
+        groups = group_articles(sorted(recs, key=lambda x: x["found"]))
+        groups.sort(key=lambda g: -len(g))         # 여러 언론이 다룬 사안부터(같으면 시간순 유지)
+        use, more = groups[:AUDIO_MAX], len(groups) - AUDIO_MAX
+        more = max(more, 0)
+        script = speakable(audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
+                                        ("아침" if label == "시험" else label), since, now, more))
+        lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})" for n, g in enumerate(use, 1)]
+        caption = head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
+        if more:
+            caption += f"\n외 {more}개 사안"
+        if len(caption) > 1000:                    # 텔레그램 설명란 1,024자 제한
+            caption = caption[:990].rsplit("\n", 1)[0] + "\n…"
+        path = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
+        try:
+            engine = tts_mp3(script, path)
+            send_audio(path, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
+            print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
+        except Exception as e:                     # 음성 실패 시 원고를 글로 대신 보냄
+            print(f"[음성 생성 실패] {type(e).__name__}: {e}", file=sys.stderr)
+            msg = head + f"{len(recs)}건 (음성 생성 실패, 원고로 대신 보냅니다)\n\n" + html.escape(script)
+            for i in range(0, len(msg), 3900):
+                send_telegram(msg[i:i + 3900])
+    if label != "시험":                            # 시험 발송은 다음 정기 브리핑 범위에 영향 없음
+        state["audio_cut"] = now.isoformat()
+        state["last_audio"] = now.isoformat()
+
+
 # ── 실행 ─────────────────────────────────────────────────────
 def main() -> int:
     missing = [k for k, v in {"TELEGRAM_BOT_TOKEN": TG_TOKEN, "TELEGRAM_CHAT_ID": TG_CHAT}.items() if not v]
@@ -705,6 +891,7 @@ def main() -> int:
         for msg in format_messages(urgent, now, head):
             send_telegram(msg)
         print(f"중수청 {len(urgent)}건 즉시 발송")
+        state.setdefault("audio_log", []).extend(to_record(a, now) for a in urgent)
     # ② 공소청·형사사법 기사: 대기 목록에 쌓았다가 마지막 모음 발송 후 DIGEST_MINUTES 지나면 발송
     shown = urgent
     for a in arts:
@@ -735,6 +922,14 @@ def main() -> int:
               f"{DIGEST_MINUTES - int((now - last).total_seconds() // 60)}분)")
     if not arts:
         print("새 기사 없음")
+
+    try:
+        audio_briefing(state, now)
+    except Exception as e:                         # 음성 문제로 알림 전체가 멈추지 않게
+        print(f"[음성 브리핑 오류] {type(e).__name__}: {e}", file=sys.stderr)
+    keep_a = now - dt.timedelta(days=7)            # 음성용 기록은 7일·최대 300건만 보관(연휴 대비)
+    state["audio_log"] = [r for r in state.get("audio_log", [])
+                          if dt.datetime.fromisoformat(r["found"]) >= keep_a][-300:]
 
     state.pop("daily", None), state.pop("daily_sent", None)   # 예전 대응 검토 기록 정리
     state["last_run"] = now.isoformat()
