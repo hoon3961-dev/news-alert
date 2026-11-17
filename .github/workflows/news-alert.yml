@@ -52,6 +52,11 @@ jobs:
           AUDIO: ${{ vars.AUDIO }}
           AUDIO_TIMES: ${{ vars.AUDIO_TIMES }}
           AUDIO_VOICE: ${{ vars.AUDIO_VOICE }}
+          AUDIO_BGM: ${{ vars.AUDIO_BGM }}
+          AUDIO_BGM_STYLE: ${{ vars.AUDIO_BGM_STYLE }}
+          AUDIO_BGM_URL: ${{ vars.AUDIO_BGM_URL }}
+          AUDIO_RATE: ${{ vars.AUDIO_RATE }}
+          AUDIO_DICT: ${{ vars.AUDIO_DICT }}
           AUDIO_TEST: ${{ inputs.audio_test }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
         run: python news_alert.py
