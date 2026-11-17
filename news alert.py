@@ -693,12 +693,71 @@ def audio_due(state: dict, now: dt.datetime):
     return None
 
 
+_STOP = {"중수청", "공소청", "중대범죄수사청", "단독", "속보", "종합", "기자", "뉴스", "관련", "의혹", "사건", "논란"}
+
+
+def _words(t: str) -> set:
+    return {w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", re.sub(r"\[[^\]]*\]", " ", t)) if w not in _STOP}
+
+
+def audio_cluster(groups: list) -> list:
+    """여러 실행에 걸쳐 들어온 같은 사안 기사들을 하나로 묶음 → [[그룹번호...], ...] (중요한 사안부터)
+    AI로 묶고, 실패하면 제목·요약에 겹치는 단어가 많은 것끼리 묶음"""
+    n = len(groups)
+    if ANTHROPIC_KEY and n > 1:
+        lines = "\n".join(f"[{i}] {g[0]['title']} / {(g[0]['summary'] or '')[:120]}" for i, g in enumerate(groups))
+        prompt = ("아래 기사 목록에서 같은 사안(같은 사건·발표·인사·조치)을 다룬 기사 번호끼리 묶어라. "
+                  "표현이 달라도 같은 일이면 같은 묶음이다. 다른 일은 따로 둔다. "
+                  "묶음 순서는 중요도 순(기사 수가 많을수록, 중수청 조직·청장·주요 사건일수록 앞). "
+                  "모든 번호가 정확히 한 번씩 들어가야 한다. JSON 배열만 출력: [[0,3],[1],[2,4]]\n\n" + lines)
+        try:
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": CLAUDE_MODEL, "max_tokens": 1500,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=90,
+            )
+            r.raise_for_status()
+            text = "".join(c.get("text", "") for c in r.json().get("content", []))
+            data = json.loads(text[text.index("["): text.rindex("]") + 1])
+            out, used = [], set()
+            for c in data:
+                c = [int(i) for i in (c if isinstance(c, list) else [c]) if 0 <= int(i) < n and int(i) not in used]
+                used.update(c)
+                if c:
+                    out.append(c)
+            out += [[i] for i in range(n) if i not in used]
+            return out
+        except Exception as e:
+            print(f"[음성 사안 묶기 AI 오류] {type(e).__name__}: {e}", file=sys.stderr)
+    ws = [_words(g[0]["title"] + " " + (g[0]["summary"] or "")[:80]) for g in groups]
+    out, where = [], {}
+    for i in range(n):
+        for j in range(i):
+            inter = ws[i] & ws[j]
+            jac = len(inter) / max(1, len(ws[i] | ws[j]))
+            if jac >= 0.3 or (len(inter) >= 3 and jac >= 0.15):
+                out[where[j]].append(i)
+                where[i] = where[j]
+                break
+        else:
+            where[i] = len(out)
+            out.append([i])
+    out.sort(key=lambda c: -sum(len(groups[i]) for i in c))
+    return out
+
+
 def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime, more: int) -> str:
     """AI가 뉴스 앵커 원고로 정리. 실패하면 요약을 그대로 이어 붙임"""
     items = []
     for n, g in enumerate(groups, 1):
-        a = g[0]
-        items.append(f"[{n}] 제목: {a['title']}\n요약: {a['summary'] or '(요약 없음)'}")
+        sums = []
+        for x in g[:4]:                            # 같은 사안 여러 기사의 요약을 합쳐 한 번에 전하게
+            if x["summary"] and x["summary"] not in sums:
+                sums.append(x["summary"])
+        items.append(f"[사안 {n}] 제목: {g[0]['title']}\n관련 기사 {len(g)}건 요약:\n" + "\n".join(sums or ["(요약 없음)"]))
     wd = "월화수목금토일"[now.weekday()]
     intro = (f"{now.month}월 {now.day}일 {wd}요일 {label}, 중수청 언론보도 브리핑입니다. "
              f"인공지능 목소리로 전해 드립니다. 이번 시간 중수청 관련 소식은 모두 {len(groups)}가지입니다.")
@@ -710,7 +769,9 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "듣는 사람은 출근길이나 퇴근길에 귀로만 듣는 중대범죄수사청(중수청) 직원이다.\n"
             f"- 첫머리는 그대로: {intro}\n- 맺음말은 그대로: {outro}\n"
             "[구성]\n"
-            "- 기사 순서대로 전한다. 사안마다 핵심을 한 문장으로 먼저 말하고(무슨 일인지), 이어서 배경이나 의미를 1~2문장 덧붙인다.\n"
+            "- 사안 번호 순서대로 전한다. 한 사안은 딱 한 번만 다룬다. 같은 사안의 여러 요약은 합쳐서 겹치는 내용 없이 전한다. "
+            "앞에서 이미 말한 사실을 뒤 사안에서 되풀이하지 않는다.\n"
+            "- 사안마다 핵심을 한 문장으로 먼저 말하고(무슨 일인지), 이어서 배경이나 의미를 1~2문장 덧붙인다.\n"
             "- 사안을 시작할 때 '먼저', '이어서', '다음 소식입니다', '한편', '마지막 소식입니다'처럼 자연스럽게 넘긴다. 매번 같은 말을 반복하지 않는다.\n"
             "- 언론사 이름이나 '보도에 따르면' 같은 출처 표현은 말하지 않는다. 사실 자체를 바로 전한다.\n"
             "[말투]\n"
@@ -1118,12 +1179,13 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         print(f"음성 브리핑({label}): 새 중수청 기사 없음")
     else:
         groups = group_articles(sorted(recs, key=lambda x: x["found"]))
-        groups.sort(key=lambda g: -len(g))         # 여러 언론이 다룬 사안부터(같으면 시간순 유지)
-        use, more = groups[:AUDIO_MAX], len(groups) - AUDIO_MAX
-        more = max(more, 0)
+        # 실행마다 따로 들어온 같은 사안(예: 9시·11시·15시에 각각 들어온 같은 사건 기사)을 하나로 합침
+        merged = [[a for i in c for a in groups[i]] for c in audio_cluster(groups)]
+        use, more = merged[:AUDIO_MAX], max(len(merged) - AUDIO_MAX, 0)
         script = speakable(audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
                                         ("아침" if label == "시험" else label), since, now, more))
-        lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})" for n, g in enumerate(use, 1)]
+        lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})"
+                 + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for n, g in enumerate(use, 1)]
         caption = head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
         if more:
             caption += f"\n외 {more}개 사안"
