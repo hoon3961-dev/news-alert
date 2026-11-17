@@ -143,6 +143,7 @@ AUDIO_MAX = int(os.getenv("AUDIO_MAX") or "10")          # 한 번에 읽을 최
 AUDIO_VOICE = (os.getenv("AUDIO_VOICE") or "").strip()  # 비우면 기본 목소리
 AUDIO_TEST = (os.getenv("AUDIO_TEST") or "").strip().lower() == "true"   # Actions에서 수동 시험
 GOOGLE_TTS_KEY = (os.getenv("GOOGLE_TTS_KEY") or "").strip()            # 있으면 구글 음성 사용
+AUDIO_BGM = (os.getenv("AUDIO_BGM") or "on").strip().lower() != "off"   # 배경음악(직접 합성한 음악이라 저작권 문제 없음)
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -712,7 +713,9 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "- 사안을 시작할 때 '먼저', '이어서', '다음 소식입니다', '한편', '마지막 소식입니다'처럼 자연스럽게 넘긴다. 매번 같은 말을 반복하지 않는다.\n"
             "- 언론사 이름이나 '보도에 따르면' 같은 출처 표현은 말하지 않는다. 사실 자체를 바로 전한다.\n"
             "[말투]\n"
-            "- 방송 뉴스 말투(~했습니다, ~입니다, ~전망입니다). 한 문장은 40자 안팎으로 짧게 끊는다. 한 문장에 정보는 하나만.\n"
+            "- 모든 문장은 반드시 '~습니다', '~입니다'로 끝낸다(방송 뉴스 말투). 요약에 있는 '~함, ~임, ~됨, ~했음, ~예정' 같은 개조식 끝맺음을 그대로 옮기지 않는다. "
+            "예: '회의에 불참함' → '회의에 불참했습니다', '조직이 개편되었음' → '조직이 개편되었습니다', '첫 사례임' → '첫 사례입니다', '발표할 예정' → '발표할 예정입니다'.\n"
+            "- 한 문장은 40자 안팎으로 짧게 끊는다. 한 문장에 정보는 하나만.\n"
             "- 신문 제목식 표현(명사로 끝나는 문장, 생략된 조사, '…' 줄임)을 쓰지 말고 완전한 문장으로 풀어 말한다.\n"
             "- 사람 이름은 직함과 함께(김지용 중수청장은). 어려운 법률 용어는 쉬운 말로 한 번 풀어 준다(예: 불송치, 즉 경찰이 사건을 검찰로 넘기지 않기로 한 것).\n"
             "- 숫자는 듣기 쉽게: '87건', '3억 원', '11월 16일'. 퍼센트는 '퍼센트'로.\n"
@@ -748,7 +751,37 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
     return "\n".join(parts)
 
 
+_POLITE = [  # 문장 끝 개조식·해라체 → 합니다체 (AI가 놓쳐도 음성은 존댓말로)
+    (r"(였|었|았|했|됐|겠)(음|다)", r"\1습니다"), (r"되었(음|다)", "되었습니다"),
+    (r"(있|없|같|않)(음|다)", r"\1습니다"), (r"(하|되)?였음", r"\1였습니다"),
+    (r"함", "했습니다"), (r"됨", "됐습니다"), (r"임", "입니다"), (r"이다", "입니다"),
+    (r"한다", "합니다"), (r"된다", "됩니다"),
+    (r"(예정|전망|방침|계획|입장|상황|상태|방안|취지|계획| 중)", r"\1입니다"),
+]
+
+
+def polite(text: str) -> str:
+    out = []
+    for sent in re.split(r"(?<=[.!?\n])", text):
+        m = re.match(r"(.*?)([.!?]?)(\s*)$", sent, re.S)
+        body, punct, sp = m.group(1), m.group(2), m.group(3)
+        if body and not re.search(r"(니다|니까|세요|시오|까요|어요|에요|예요|해요|죠)$", body):
+            last2 = body[-2:]
+            if len(last2) == 2 and last2[1] in "다음" and "가" <= last2[0] <= "힣" and (ord(last2[0]) - 0xAC00) % 28 == 20:
+                body = body[:-1] + "습니다"            # 밝혔다·밝혔음·보였다 등 받침 ㅆ + 다/음
+            for pat, sub in ([] if body.endswith("니다") else _POLITE):
+                new = re.sub(pat + r"$", sub, body)
+                if new != body:
+                    body = new
+                    break
+            if body and punct == "" and re.search(r"[가-힣]$", body):
+                punct = "."
+        out.append(body + punct + sp)
+    return "".join(out)
+
+
 def speakable(text: str) -> str:
+    text = polite(text)
     text = re.sub(r"(?m)^\s*(#+|[-*•]|\d+[.)])\s+", "", text).replace("**", "")
     text = re.sub(r"[\[\]【】〈〉<>\"“”‘’'「」]", " ", text)
     text = text.replace("·", ", ").replace("→", ", ").replace("…", ", ")
@@ -791,13 +824,156 @@ def tts_mp3(text: str, path: str) -> str:
     return f"edge {voice}"
 
 
+
+# ── 배경음악: 외부 음원 없이 코드로 직접 합성(저작권 걱정 없음) ──────────────
+def _write_wav(path: str, data: list, sr: int) -> None:
+    import struct
+    import wave
+    peak = max(1e-9, max(abs(x) for x in data))
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(b"".join(struct.pack("<h", int(x / peak * 0.9 * 32767)) for x in data))
+
+
+def _note(buf: list, sr: int, start: float, dur: float, freq: float, amp: float,
+          attack: float = 0.01, decay: float = 0.0, release: float = 0.05) -> None:
+    """buf에 음 하나를 더함. decay>0이면 그 시간 상수로 점점 작아짐(피아노·벨 느낌)"""
+    import math
+    i0, n = int(start * sr), int(dur * sr)
+    w = 2 * math.pi * freq / sr
+    for k in range(n):
+        i = i0 + k
+        if i >= len(buf):
+            break
+        t = k / sr
+        env = min(1.0, t / attack) if attack else 1.0
+        if decay:
+            env *= math.exp(-t / decay)
+        if t > dur - release:
+            env *= max(0.0, (dur - t) / release)
+        buf[i] += amp * env * (math.sin(w * k) + 0.25 * math.sin(2 * w * k) + 0.08 * math.sin(3 * w * k))
+
+
+def make_bgm(folder: str):
+    """뉴스 시작 음(약 3초)과 깔리는 반주(19.2초 반복용)를 wav로 만듦"""
+    import random
+    sr = 22050
+    f = lambda m: 440.0 * 2 ** ((m - 69) / 12)    # 음 번호 → 주파수
+    # 시작 음: 솔-도-미 상승 후 화음
+    j = [0.0] * int(3.2 * sr)
+    for i, m in enumerate((67, 72, 76)):
+        _note(j, sr, i * 0.14, 0.35, f(m), 0.5, decay=0.18)
+    for m in (60, 64, 67, 72, 79):
+        _note(j, sr, 0.45, 2.7, f(m), 0.32, attack=0.005, decay=0.9, release=0.4)
+    for m in (48, 36):
+        _note(j, sr, 0.45, 2.7, f(m), 0.35, attack=0.005, decay=1.2, release=0.4)
+    # 반주: 100BPM, 화음 진행 C-Am-F-G (2바퀴), 은은한 패드 + 박자 맞춘 짧은 음 + 아주 작은 틱
+    beat = 0.6
+    chords = [(48, 60, 64, 67, 71), (45, 57, 60, 64, 67), (41, 57, 60, 65, 69), (43, 55, 59, 62, 67)] * 2
+    b = [0.0] * int(len(chords) * 4 * beat * sr)
+    rnd = random.Random(7)
+    for c, ch in enumerate(chords):
+        t0 = c * 4 * beat
+        for m in ch[1:]:
+            _note(b, sr, t0, 4 * beat, f(m), 0.10, attack=0.2, release=0.12)
+        _note(b, sr, t0, 4 * beat, f(ch[0]), 0.22, attack=0.02, decay=1.5, release=0.3)
+        for q in range(8):                          # 8분음표 아르페지오
+            m = ch[1 + (q % 4)] + 12
+            _note(b, sr, t0 + q * beat / 2, 0.25, f(m), 0.07 if q % 2 else 0.10, attack=0.003, decay=0.12)
+        for q in range(8):                          # 시계 초침 같은 틱(긴장감)
+            i0 = int((t0 + q * beat / 2) * sr)
+            for k in range(int(0.012 * sr)):
+                if i0 + k < len(b):
+                    b[i0 + k] += (rnd.random() - 0.5) * 0.05 * (1 - k / (0.012 * sr))
+    jp, bp = os.path.join(folder, "bgm_intro.wav"), os.path.join(folder, "bgm_bed.wav")
+    _write_wav(jp, j, sr)
+    _write_wav(bp, b, sr)
+    return jp, bp
+
+
+def _ffmpeg() -> str:
+    """ffmpeg 실행 파일 위치(없으면 pip의 imageio-ffmpeg에 든 것)"""
+    import shutil
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return ""
+
+
+def _duration(ff: str, path: str) -> float:
+    import subprocess
+    err = subprocess.run([ff, "-hide_banner", "-i", path], capture_output=True, text=True, timeout=60).stderr
+    h, m, sec = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", err).groups()
+    return int(h) * 3600 + int(m) * 60 + float(sec)
+
+
+def add_bgm(voice: str) -> str:
+    """음성 앞에 시작 음, 밑에 작은 반주, 끝에 반주가 잠깐 커졌다 사라지게. 실패하면 음성만"""
+    import subprocess
+    ff = _ffmpeg()
+    if not AUDIO_BGM or not ff:
+        return voice
+    try:
+        folder = os.path.dirname(os.path.abspath(voice))
+        jp, bp = make_bgm(folder)
+        dur = _duration(ff, voice)
+        lead, tail = 2.8, 4.0
+        total = lead + dur + tail
+        out = voice[:-4] + "_bgm.mp3"
+        fc = (f"[0:a]aresample=44100,aformat=channel_layouts=mono,adelay={int(lead * 1000)}:all=1[v];"
+              f"[1:a]aresample=44100,volume=0.55[j];"
+              f"[2:a]aresample=44100,atrim=0:{total:.2f},"
+              f"volume='0.10+0.12*clip((t-{lead + dur:.2f})/0.8,0,1)':eval=frame,"
+              f"afade=t=in:st=1.5:d=1.5,afade=t=out:st={total - 2.5:.2f}:d=2.5[b];"
+              f"[v][j][b]amix=inputs=3:duration=longest:normalize=0,alimiter=limit=0.95[o]")
+        subprocess.run([ff, "-y", "-v", "error", "-i", voice, "-i", jp, "-stream_loop", "-1", "-i", bp,
+                        "-filter_complex", fc, "-map", "[o]", "-t", f"{total:.2f}", "-ac", "1", "-b:a", "96k", out],
+                       check=True, capture_output=True, timeout=180)
+        if os.path.getsize(out) > 1000:
+            return out
+    except Exception as e:
+        print(f"[배경음악 생략] {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
+    return voice
+
+
+def to_voice(mp3: str) -> str:
+    """텔레그램 '음성 메시지'(ogg/opus)로 변환. 음악 파일(sendAudio)은 끝나면 채팅방의 이전 음악이
+    이어서 재생되지만, 음성 메시지는 더 새로운 음성 메시지로만 넘어가므로 최신 브리핑은 끝나면 멈춤"""
+    import subprocess
+    ff = _ffmpeg()
+    if not ff:
+        return ""
+    out = mp3[:-4] + ".ogg"
+    try:
+        subprocess.run([ff, "-y", "-v", "error", "-i", mp3, "-ac", "1", "-ar", "48000",
+                        "-c:a", "libopus", "-b:a", "48k", "-application", "audio", out],
+                       check=True, capture_output=True, timeout=180)
+        return out if os.path.getsize(out) > 1000 else ""
+    except Exception as e:
+        print(f"[음성 메시지 변환 실패] {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
+        return ""
+
+
 def send_audio(path: str, caption: str, title: str) -> None:
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendAudio"
-    data = {"chat_id": TG_CHAT.strip(), "caption": caption, "parse_mode": "HTML",
-            "title": title, "performer": "중수청 브리핑"}
+    ogg = to_voice(path)
+    if ogg:                                        # 음성 메시지로 발송(재생이 끝나면 멈춤)
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendVoice"
+        field, fpath, mime = "voice", ogg, "audio/ogg"
+        data = {"chat_id": TG_CHAT.strip(), "caption": caption, "parse_mode": "HTML"}
+    else:                                          # 변환이 안 되면 예전처럼 음악 파일로
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendAudio"
+        field, fpath, mime = "audio", path, "audio/mpeg"
+        data = {"chat_id": TG_CHAT.strip(), "caption": caption, "parse_mode": "HTML",
+                "title": title, "performer": "중수청 브리핑"}
     for _ in range(2):
-        with open(path, "rb") as f:
-            r = requests.post(url, data=data, files={"audio": (os.path.basename(path), f, "audio/mpeg")}, timeout=120)
+        with open(fpath, "rb") as f:
+            r = requests.post(url, data=data, files={field: (os.path.basename(fpath), f, mime)}, timeout=120)
         if r.ok:
             return
         print(f"[텔레그램 음성 오류] {r.status_code}: {r.text[:200]}", file=sys.stderr)
@@ -837,6 +1013,10 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         path = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
         try:
             engine = tts_mp3(script, path)
+            mixed = add_bgm(path)
+            if mixed != path:
+                engine += " + 배경음악"
+                path = mixed
             send_audio(path, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
             print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
         except Exception as e:                     # 음성 실패 시 원고를 글로 대신 보냄
