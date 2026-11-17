@@ -144,6 +144,7 @@ AUDIO_VOICE = (os.getenv("AUDIO_VOICE") or "").strip()  # 비우면 기본 목�
 AUDIO_TEST = (os.getenv("AUDIO_TEST") or "").strip().lower() == "true"   # Actions에서 수동 시험
 GOOGLE_TTS_KEY = (os.getenv("GOOGLE_TTS_KEY") or "").strip()            # 있으면 구글 음성 사용
 AUDIO_BGM = (os.getenv("AUDIO_BGM") or "on").strip().lower() != "off"   # 배경음악(직접 합성한 음악이라 저작권 문제 없음)
+AUDIO_BGM_STYLE = int(os.getenv("AUDIO_BGM_STYLE") or "1")              # 1 속보 시그널(기본) ~ 5
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -826,7 +827,11 @@ def tts_mp3(text: str, path: str) -> str:
 
 
 # ── 배경음악: 외부 음원 없이 코드로 직접 합성(저작권 걱정 없음) ──────────────
-def _write_wav(path: str, data: list, sr: int) -> None:
+# AUDIO_BGM_STYLE: 1 속보 시그널 · 2 수사 드라마 · 3 탐사보도 · 4 긴박 리포트 · 5 정보 브리핑
+_SR = 22050
+
+
+def _write_wav(path: str, data: list, sr: int = _SR) -> None:
     import struct
     import wave
     peak = max(1e-9, max(abs(x) for x in data))
@@ -837,12 +842,21 @@ def _write_wav(path: str, data: list, sr: int) -> None:
         w.writeframes(b"".join(struct.pack("<h", int(x / peak * 0.9 * 32767)) for x in data))
 
 
-def _note(buf: list, sr: int, start: float, dur: float, freq: float, amp: float,
-          attack: float = 0.01, decay: float = 0.0, release: float = 0.05) -> None:
-    """buf에 음 하나를 더함. decay>0이면 그 시간 상수로 점점 작아짐(피아노·벨 느낌)"""
+def _mf(m: float) -> float:
+    return 440.0 * 2 ** ((m - 69) / 12)
+
+
+_SINE = (1.0, 0.25, 0.08)
+_SAW = (1.0, 0.5, 0.33, 0.25, 0.2, 0.16, 0.12)
+_SQR = (1.0, 0.0, 0.33, 0.0, 0.2, 0.0, 0.14)
+_BRASS = (1.0, 0.7, 0.5, 0.35, 0.25, 0.15)
+
+
+def _tone(buf, start, dur, m, amp, harm=_SINE, attack=0.005, decay=0.0, release=0.03, sr=_SR):
     import math
     i0, n = int(start * sr), int(dur * sr)
-    w = 2 * math.pi * freq / sr
+    w = 2 * math.pi * _mf(m) / sr
+    hs = [(h + 1, a) for h, a in enumerate(harm) if a]
     for k in range(n):
         i = i0 + k
         if i >= len(buf):
@@ -853,43 +867,148 @@ def _note(buf: list, sr: int, start: float, dur: float, freq: float, amp: float,
             env *= math.exp(-t / decay)
         if t > dur - release:
             env *= max(0.0, (dur - t) / release)
-        buf[i] += amp * env * (math.sin(w * k) + 0.25 * math.sin(2 * w * k) + 0.08 * math.sin(3 * w * k))
+        if env < 1e-4:
+            continue
+        buf[i] += amp * env * sum(a * math.sin(h * w * k) for h, a in hs)
 
 
-def make_bgm(folder: str):
-    """뉴스 시작 음(약 3초)과 깔리는 반주(19.2초 반복용)를 wav로 만듦"""
+def _kick(buf, start, amp, sr=_SR):
+    import math
+    i0, ph = int(start * sr), 0.0
+    for k in range(int(0.3 * sr)):
+        if i0 + k >= len(buf):
+            break
+        t = k / sr
+        ph += 2 * math.pi * (45 + 100 * math.exp(-t / 0.025)) / sr
+        buf[i0 + k] += amp * math.exp(-t / 0.11) * math.sin(ph)
+
+
+def _noise(buf, start, amp, decay, rnd, dur=0.15, hp=True, sr=_SR):
+    import math
+    i0, prev = int(start * sr), 0.0
+    for k in range(int(dur * sr)):
+        if i0 + k >= len(buf):
+            break
+        x = rnd.random() * 2 - 1
+        y, prev = (x - prev if hp else x), x
+        buf[i0 + k] += amp * math.exp(-k / sr / decay) * y
+
+
+def _snare(buf, start, amp, rnd):
+    _noise(buf, start, amp, 0.07, rnd, dur=0.2)
+    _tone(buf, start, 0.12, 55, amp * 0.6, attack=0.001, decay=0.04)
+
+
+def _style(n: int):
+    """(시작 시그널, 반복 반주) 두 목록을 돌려줌"""
     import random
-    sr = 22050
-    f = lambda m: 440.0 * 2 ** ((m - 69) / 12)    # 음 번호 → 주파수
-    # 시작 음: 솔-도-미 상승 후 화음
-    j = [0.0] * int(3.2 * sr)
-    for i, m in enumerate((67, 72, 76)):
-        _note(j, sr, i * 0.14, 0.35, f(m), 0.5, decay=0.18)
-    for m in (60, 64, 67, 72, 79):
-        _note(j, sr, 0.45, 2.7, f(m), 0.32, attack=0.005, decay=0.9, release=0.4)
-    for m in (48, 36):
-        _note(j, sr, 0.45, 2.7, f(m), 0.35, attack=0.005, decay=1.2, release=0.4)
-    # 반주: 100BPM, 화음 진행 C-Am-F-G (2바퀴), 은은한 패드 + 박자 맞춘 짧은 음 + 아주 작은 틱
-    beat = 0.6
-    chords = [(48, 60, 64, 67, 71), (45, 57, 60, 64, 67), (41, 57, 60, 65, 69), (43, 55, 59, 62, 67)] * 2
-    b = [0.0] * int(len(chords) * 4 * beat * sr)
-    rnd = random.Random(7)
-    for c, ch in enumerate(chords):
-        t0 = c * 4 * beat
-        for m in ch[1:]:
-            _note(b, sr, t0, 4 * beat, f(m), 0.10, attack=0.2, release=0.12)
-        _note(b, sr, t0, 4 * beat, f(ch[0]), 0.22, attack=0.02, decay=1.5, release=0.3)
-        for q in range(8):                          # 8분음표 아르페지오
-            m = ch[1 + (q % 4)] + 12
-            _note(b, sr, t0 + q * beat / 2, 0.25, f(m), 0.07 if q % 2 else 0.10, attack=0.003, decay=0.12)
-        for q in range(8):                          # 시계 초침 같은 틱(긴장감)
-            i0 = int((t0 + q * beat / 2) * sr)
-            for k in range(int(0.012 * sr)):
-                if i0 + k < len(b):
-                    b[i0 + k] += (rnd.random() - 0.5) * 0.05 * (1 - k / (0.012 * sr))
-    jp, bp = os.path.join(folder, "bgm_intro.wav"), os.path.join(folder, "bgm_bed.wav")
-    _write_wav(jp, j, sr)
-    _write_wav(bp, b, sr)
+    rnd = random.Random(n)
+    if n == 1:      # 속보 시그널: 128BPM D단조, 16분음표 베이스 맥박 + 팀파니 + 스타카토 화음
+        bpm, prog = 128, [(50, 53, 57), (46, 50, 53), (48, 52, 55), (50, 53, 57)]
+    elif n == 2:    # 수사 드라마: 120BPM A단조, 째깍 초침 + 낮은 현악 스타카토 + 긴장 패드
+        bpm, prog = 120, [(45, 48, 52), (41, 45, 48), (38, 41, 45), (40, 44, 47)]
+    elif n == 3:    # 탐사보도: 132BPM E단조, 킥·하이햇 + 16분 아르페지오 + 저음 드론
+        bpm, prog = 132, [(40, 43, 47), (36, 40, 43), (45, 48, 52), (47, 51, 54)]
+    elif n == 4:    # 긴박 리포트: 140BPM C단조, 당김음 금관 스탭 + 8분 베이스 + 스네어
+        bpm, prog = 140, [(48, 51, 55), (44, 48, 51), (51, 55, 58), (43, 47, 50)]
+    else:           # 정보 브리핑: 124BPM G단조, 피아노 8분 반복 + 신스 베이스 + 가벼운 비트
+        bpm, prog = 124, [(43, 46, 50), (39, 43, 46), (46, 50, 53), (41, 45, 48)]
+    beat = 60.0 / bpm
+    bar = 4 * beat
+    # ── 반주(4마디 × 2바퀴) ──
+    bars = prog * 2
+    b = [0.0] * int(len(bars) * bar * _SR)
+    for c, ch in enumerate(bars):
+        t0 = c * bar
+        root = ch[0] - 12
+        if n == 1:
+            for q in range(16):
+                _tone(b, t0 + q * beat / 4, beat / 4 * 0.8, root, 0.30 if q % 4 == 0 else 0.18, _SAW, decay=0.08)
+            for q in (0, 2):
+                _tone(b, t0 + q * beat, 0.6, root - 12, 0.5, _SINE, attack=0.002, decay=0.35)   # 팀파니
+            for q in (1.5, 3.5):
+                for m in ch:
+                    _tone(b, t0 + q * beat, 0.18, m + 12, 0.07, _BRASS, decay=0.08)
+            for q in range(8):
+                _noise(b, t0 + q * beat / 2, 0.05, 0.02, rnd, dur=0.04)
+        elif n == 2:
+            for q in range(16):
+                _noise(b, t0 + q * beat / 4, 0.09 if q % 2 == 0 else 0.04, 0.008, rnd, dur=0.02)   # 초침
+            pat = [0, 0, 3, 0, 0, 0, 3, 5]
+            for q, d in enumerate(pat):
+                _tone(b, t0 + q * beat / 2, beat / 2 * 0.6, ch[0] + d - 12, 0.22, _SAW, decay=0.12)
+            for m in ch:
+                _tone(b, t0, bar, m + 12, 0.05, _SINE, attack=0.4, release=0.2)
+            _tone(b, t0, bar, ch[0] + 23, 0.025, _SINE, attack=0.6, release=0.3)               # 높은 긴장음
+            _kick(b, t0, 0.35)
+        elif n == 3:
+            for q in range(4):
+                _kick(b, t0 + q * beat, 0.5)
+                _noise(b, t0 + q * beat + beat / 2, 0.10, 0.03, rnd, dur=0.06)
+            arp = [ch[0], ch[1], ch[2], ch[2] + 5]
+            for q in range(16):
+                _tone(b, t0 + q * beat / 4, beat / 4 * 0.7, arp[q % 4] + 12, 0.10, _SQR, decay=0.07)
+            _tone(b, t0, bar, root, 0.20, _SAW, attack=0.05, release=0.05)
+        elif n == 4:
+            for q in range(8):
+                _tone(b, t0 + q * beat / 2, beat / 2 * 0.7, root, 0.25, _SAW, decay=0.1)
+            for q in (0, 1.5, 3, 3.5):
+                for m in ch:
+                    _tone(b, t0 + q * beat, 0.16, m + 12, 0.08, _BRASS, decay=0.07)
+            _kick(b, t0, 0.5)
+            _kick(b, t0 + 2.5 * beat, 0.4)
+            for q in (1, 3):
+                _snare(b, t0 + q * beat, 0.18, rnd)
+            for q in range(8):
+                _noise(b, t0 + q * beat / 2, 0.04, 0.015, rnd, dur=0.03)
+        else:
+            pat = [ch[0] + 12, ch[2] + 12, ch[1] + 12, ch[2] + 12] * 2
+            for q, m in enumerate(pat):
+                _tone(b, t0 + q * beat / 2, beat / 2, m, 0.12, _SINE, decay=0.25)               # 피아노 느낌
+            for q in (0, 1.5, 2, 3):
+                _tone(b, t0 + q * beat, beat * 0.45, root, 0.22, _SQR, decay=0.15)
+            _kick(b, t0, 0.35)
+            _kick(b, t0 + 2 * beat, 0.3)
+            for q in range(8):
+                _noise(b, t0 + q * beat / 2, 0.035, 0.02, rnd, dur=0.04)
+    # ── 시작 시그널(약 3초) ──
+    j = [0.0] * int(3.4 * _SR)
+    ch = prog[0]
+    if n in (1, 4):          # 빠른 상승 스탭 3번 + 화음 히트
+        for i, m in enumerate((ch[0], ch[1], ch[2])):
+            for x in (0, 12):
+                _tone(j, i * 0.12, 0.1, m + x, 0.18, _BRASS, decay=0.06)
+        for m in ch + (ch[0] + 12, ch[0] - 12, ch[0] - 24):
+            _tone(j, 0.42, 2.6, m, 0.13, _BRASS, attack=0.004, decay=0.7, release=0.4)
+        _tone(j, 0.42, 2.0, ch[0] - 24, 0.5, _SINE, attack=0.002, decay=0.5)
+        _noise(j, 0.42, 0.10, 0.2, rnd, dur=0.6, hp=False)
+    elif n == 2:             # 낮은 '둥-' 두 번 + 긴장 화음
+        for t in (0.0, 0.6):
+            _tone(j, t, 0.9, ch[0] - 24, 0.6, _SINE, attack=0.002, decay=0.4)
+            _tone(j, t, 0.9, ch[0] - 12, 0.25, _SAW, attack=0.002, decay=0.25)
+        for m in (ch[0], ch[0] + 1, ch[2]):
+            _tone(j, 1.2, 2.1, m + 12, 0.08, _SAW, attack=0.3, release=0.5)
+    elif n == 3:             # 빠른 아르페지오 상승 + 킥
+        for i in range(8):
+            _tone(j, i * 0.07, 0.12, ch[i % 3] + 12 * (i // 3), 0.15, _SQR, decay=0.06)
+        _kick(j, 0.6, 0.7)
+        for m in ch:
+            _tone(j, 0.6, 2.5, m + 12, 0.1, _SAW, attack=0.01, decay=0.8, release=0.4)
+    else:                    # 피아노 3음 모티프 + 화음
+        for i, m in enumerate((ch[2] + 12, ch[1] + 12, ch[0] + 24)):
+            _tone(j, i * 0.18, 0.5, m, 0.3, _SINE, decay=0.3)
+        _kick(j, 0.6, 0.5)
+        for m in ch + (ch[0] + 12,):
+            _tone(j, 0.6, 2.6, m + 12, 0.15, _SINE, attack=0.003, decay=0.9, release=0.4)
+        _tone(j, 0.6, 2.6, ch[0] - 12, 0.3, _SQR, decay=0.6)
+    return j, b
+
+
+def make_bgm(folder: str, style: int = 1):
+    j, b = _style(style)
+    jp, bp = os.path.join(folder, f"bgm_intro{style}.wav"), os.path.join(folder, f"bgm_bed{style}.wav")
+    _write_wav(jp, j)
+    _write_wav(bp, b)
     return jp, bp
 
 
@@ -921,7 +1040,7 @@ def add_bgm(voice: str) -> str:
         return voice
     try:
         folder = os.path.dirname(os.path.abspath(voice))
-        jp, bp = make_bgm(folder)
+        jp, bp = make_bgm(folder, AUDIO_BGM_STYLE)
         dur = _duration(ff, voice)
         lead, tail = 2.8, 4.0
         total = lead + dur + tail
