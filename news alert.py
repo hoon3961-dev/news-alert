@@ -101,6 +101,8 @@ ALLOWED_PRESS = {
     "경기일보": "kyeonggi.com", "중부일보": "joongboo.com", "기호일보": "kihoilbo.co.kr", "인천일보": "incheonilbo.com",
     "강원일보": "kwnews.co.kr", "강원도민일보": "kado.net", "제주일보": "jejunews.com", "한라일보": "ihalla.com",
     "제민일보": "jemin.com", "산경일보": "", "동방일보": "", "대한일보": "",
+    # 11.12. 스크랩 대조 후 추가(도메인 미확인은 이름만 등록 — 구글 표기와 일치해야 함)
+    "울산신문": "ulsanpress.net", "전라일보": "jeollailbo.com", "광주타임스": "", "JCN울산중앙방송": "", "알쓸신문": "",
 }
 # 이름이 다르게 표시되는 경우(구글 뉴스 표기)
 PRESS_ALIASES = {"서울Pn": "서울신문", "JoongAng": "중앙일보", "Yonhap": "연합뉴스", "TV조선뉴스": "TV조선",
@@ -132,6 +134,17 @@ CORE_TERMS = ("중수청", "중대범죄수사청", "공소청", "수사·기소
 CONTEXT_TERMS = ("중수청", "중대범죄수사청", "공소청", "검찰", "검사", "수사", "청장", "공수처",
                  "경찰", "특검", "형사", "법무", "기소", "사법")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
+
+# ── 음성 브리핑(중수청 기사만, 평일 아침·오후) ──────────────────
+# AUDIO=off 로 끄기. AUDIO_TIMES: 만드는 시각(쉼표 구분). 직전 브리핑 이후 보낸 중수청 기사를 담음
+AUDIO_ON = (os.getenv("AUDIO") or "on").strip().lower() != "off"
+AUDIO_TIMES = os.getenv("AUDIO_TIMES") or "07:10,17:00"
+AUDIO_MAX = int(os.getenv("AUDIO_MAX") or "10")          # 한 번에 읽을 최대 사안 수
+AUDIO_VOICE = (os.getenv("AUDIO_VOICE") or "").strip()  # 비우면 기본 목소리
+AUDIO_TEST = (os.getenv("AUDIO_TEST") or "").strip().lower() == "true"   # Actions에서 수동 시험
+GOOGLE_TTS_KEY = (os.getenv("GOOGLE_TTS_KEY") or "").strip()            # 있으면 구글 음성 사용
+AUDIO_BGM = (os.getenv("AUDIO_BGM") or "on").strip().lower() != "off"   # 배경음악(직접 합성한 음악이라 저작권 문제 없음)
+AUDIO_BGM_STYLE = int(os.getenv("AUDIO_BGM_STYLE") or "1")              # 1 속보 시그널(기본) ~ 5
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -595,7 +608,8 @@ def similar(t1: str, t2: str, th: float = 0.6) -> bool:
 
 def to_record(a: dict, now: dt.datetime) -> dict:
     return {"url": a["url"], "title": a["title"], "press": a["press"], "pub": a["pub"].isoformat(),
-            "summary": a["summary"], "group": a.get("group"), "found": now.isoformat()}
+            "summary": a["summary"], "group": a.get("group"), "found": now.isoformat(),
+            "jsc": bool(a.get("priority"))}
 
 
 def from_record(r: dict) -> dict:
@@ -652,6 +666,490 @@ def send_telegram(text: str) -> None:
     r.raise_for_status()
 
 
+
+# ── 음성 브리핑 ───────────────────────────────────────────────
+def _kr_holidays():
+    try:
+        import holidays
+        return holidays.KR(years=range(dt.date.today().year - 1, dt.date.today().year + 2))
+    except Exception:
+        return {}
+
+
+def audio_due(state: dict, now: dt.datetime):
+    """만들 차례면 '아침'/'오후'(시험이면 '시험'), 아니면 None. 평일·비공휴일만, 예정 시각부터 3시간 안"""
+    if AUDIO_TEST:
+        return "시험"
+    if not AUDIO_ON or now.weekday() >= 5 or now.date() in _kr_holidays():
+        return None
+    last = dt.datetime.fromisoformat(state["last_audio"]) if state.get("last_audio") else None
+    for t in AUDIO_TIMES.split(","):
+        m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", t)
+        if not m:
+            continue
+        slot = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        if slot <= now < slot + dt.timedelta(hours=3) and (last is None or last < slot):
+            return "아침" if slot.hour < 12 else "오후"
+    return None
+
+
+def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime, more: int) -> str:
+    """AI가 뉴스 앵커 원고로 정리. 실패하면 요약을 그대로 이어 붙임"""
+    items = []
+    for n, g in enumerate(groups, 1):
+        a = g[0]
+        items.append(f"[{n}] 제목: {a['title']}\n요약: {a['summary'] or '(요약 없음)'}")
+    wd = "월화수목금토일"[now.weekday()]
+    intro = (f"{now.month}월 {now.day}일 {wd}요일 {label}, 중수청 언론보도 브리핑입니다. "
+             f"인공지능 목소리로 전해 드립니다. 이번 시간 중수청 관련 소식은 모두 {len(groups)}가지입니다.")
+    outro = (f"이 밖에도 중수청 관련 기사가 {more}건 더 있으니, 텔레그램 알림에서 확인해 주십시오. " if more else "") + \
+        "지금까지 중수청 언론보도 브리핑이었습니다."
+    if ANTHROPIC_KEY:
+        prompt = (
+            "너는 아침·저녁 라디오 뉴스 앵커다. 아래 기사들로 3분 안팎의 라디오 뉴스 원고를 써라. "
+            "듣는 사람은 출근길이나 퇴근길에 귀로만 듣는 중대범죄수사청(중수청) 직원이다.\n"
+            f"- 첫머리는 그대로: {intro}\n- 맺음말은 그대로: {outro}\n"
+            "[구성]\n"
+            "- 기사 순서대로 전한다. 사안마다 핵심을 한 문장으로 먼저 말하고(무슨 일인지), 이어서 배경이나 의미를 1~2문장 덧붙인다.\n"
+            "- 사안을 시작할 때 '먼저', '이어서', '다음 소식입니다', '한편', '마지막 소식입니다'처럼 자연스럽게 넘긴다. 매번 같은 말을 반복하지 않는다.\n"
+            "- 언론사 이름이나 '보도에 따르면' 같은 출처 표현은 말하지 않는다. 사실 자체를 바로 전한다.\n"
+            "[말투]\n"
+            "- 모든 문장은 반드시 '~습니다', '~입니다'로 끝낸다(방송 뉴스 말투). 요약에 있는 '~함, ~임, ~됨, ~했음, ~예정' 같은 개조식 끝맺음을 그대로 옮기지 않는다. "
+            "예: '회의에 불참함' → '회의에 불참했습니다', '조직이 개편되었음' → '조직이 개편되었습니다', '첫 사례임' → '첫 사례입니다', '발표할 예정' → '발표할 예정입니다'.\n"
+            "- 한 문장은 40자 안팎으로 짧게 끊는다. 한 문장에 정보는 하나만.\n"
+            "- 신문 제목식 표현(명사로 끝나는 문장, 생략된 조사, '…' 줄임)을 쓰지 말고 완전한 문장으로 풀어 말한다.\n"
+            "- 사람 이름은 직함과 함께(김지용 중수청장은). 어려운 법률 용어는 쉬운 말로 한 번 풀어 준다(예: 불송치, 즉 경찰이 사건을 검찰로 넘기지 않기로 한 것).\n"
+            "- 숫자는 듣기 쉽게: '87건', '3억 원', '11월 16일'. 퍼센트는 '퍼센트'로.\n"
+            "- 괄호, 따옴표, 대괄호, 기호(·, →, ~, /), 영문 약어는 쓰지 않는다. [단독] 표시는 읽지 않는다.\n"
+            "[금지]\n"
+            "- 제목·요약에 없는 사실, 숫자, 평가, 전망을 지어내지 않는다. 앵커의 개인 의견을 넣지 않는다.\n"
+            "- 제목, 번호, 소제목, 마크다운 기호 없이 소리 내어 읽을 문장만 출력한다. 전체 1,800자 이내.\n\n"
+            + "\n\n".join(items)
+        )
+        for attempt in range(2):
+            try:
+                r = requests.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                             "content-type": "application/json"},
+                    json={"model": CLAUDE_MODEL, "max_tokens": 3000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                    timeout=120,
+                )
+                r.raise_for_status()
+                text = "".join(c.get("text", "") for c in r.json().get("content", [])).strip()
+                if len(text) > 50:
+                    return text
+            except Exception as e:
+                print(f"[음성 원고 AI 오류] {type(e).__name__}: {e}", file=sys.stderr)
+                time.sleep(5)
+    parts = [intro]
+    for n, g in enumerate(groups, 1):
+        a = g[0]
+        lead = "먼저, " if n == 1 else ("마지막 소식입니다. " if n == len(groups) else "다음 소식입니다. ")
+        parts.append(lead + (a["summary"] or a["title"]))
+    parts.append(outro)
+    return "\n".join(parts)
+
+
+_POLITE = [  # 문장 끝 개조식·해라체 → 합니다체 (AI가 놓쳐도 음성은 존댓말로)
+    (r"(였|었|았|했|됐|겠)(음|다)", r"\1습니다"), (r"되었(음|다)", "되었습니다"),
+    (r"(있|없|같|않)(음|다)", r"\1습니다"), (r"(하|되)?였음", r"\1였습니다"),
+    (r"함", "했습니다"), (r"됨", "됐습니다"), (r"임", "입니다"), (r"이다", "입니다"),
+    (r"한다", "합니다"), (r"된다", "됩니다"),
+    (r"(예정|전망|방침|계획|입장|상황|상태|방안|취지|계획| 중)", r"\1입니다"),
+]
+
+
+def polite(text: str) -> str:
+    out = []
+    for sent in re.split(r"(?<=[.!?\n])", text):
+        m = re.match(r"(.*?)([.!?]?)(\s*)$", sent, re.S)
+        body, punct, sp = m.group(1), m.group(2), m.group(3)
+        if body and not re.search(r"(니다|니까|세요|시오|까요|어요|에요|예요|해요|죠)$", body):
+            last2 = body[-2:]
+            if len(last2) == 2 and last2[1] in "다음" and "가" <= last2[0] <= "힣" and (ord(last2[0]) - 0xAC00) % 28 == 20:
+                body = body[:-1] + "습니다"            # 밝혔다·밝혔음·보였다 등 받침 ㅆ + 다/음
+            for pat, sub in ([] if body.endswith("니다") else _POLITE):
+                new = re.sub(pat + r"$", sub, body)
+                if new != body:
+                    body = new
+                    break
+            if body and punct == "" and re.search(r"[가-힣]$", body):
+                punct = "."
+        out.append(body + punct + sp)
+    return "".join(out)
+
+
+def speakable(text: str) -> str:
+    text = polite(text)
+    text = re.sub(r"(?m)^\s*(#+|[-*•]|\d+[.)])\s+", "", text).replace("**", "")
+    text = re.sub(r"[\[\]【】〈〉<>\"“”‘’'「」]", " ", text)
+    text = text.replace("·", ", ").replace("→", ", ").replace("…", ", ")
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def tts_mp3(text: str, path: str) -> str:
+    """원고 → mp3. GOOGLE_TTS_KEY가 있으면 구글, 없으면 edge-tts(무료). 쓴 엔진 이름을 돌려줌"""
+    if GOOGLE_TTS_KEY:
+        import base64
+        voice = AUDIO_VOICE or "ko-KR-Neural2-A"
+        chunks, cur = [], ""
+        for sent in re.split(r"(?<=[.?!다요])\s+", text):     # 구글은 한 번에 5,000바이트까지
+            if cur and len((cur + " " + sent).encode()) > 4500:
+                chunks.append(cur)
+                cur = sent
+            else:
+                cur = (cur + " " + sent).strip()
+        if cur:
+            chunks.append(cur)
+        with open(path, "wb") as f:
+            for c in chunks:
+                r = requests.post(
+                    "https://texttospeech.googleapis.com/v1/text:synthesize",
+                    params={"key": GOOGLE_TTS_KEY},
+                    json={"input": {"text": c}, "voice": {"languageCode": "ko-KR", "name": voice},
+                          "audioConfig": {"audioEncoding": "MP3"}},
+                    timeout=60,
+                )
+                if not r.ok:
+                    raise RuntimeError(f"구글 음성 오류 {r.status_code}: {r.text[:200]}")
+                f.write(base64.b64decode(r.json()["audioContent"]))
+        return f"구글 {voice}"
+    import asyncio
+    import edge_tts
+    voice = AUDIO_VOICE or "ko-KR-SunHiNeural"
+    asyncio.run(edge_tts.Communicate(text, voice).save(path))
+    if os.path.getsize(path) < 1000:
+        raise RuntimeError("음성 파일이 비어 있음")
+    return f"edge {voice}"
+
+
+
+# ── 배경음악: 외부 음원 없이 코드로 직접 합성(저작권 걱정 없음) ──────────────
+# AUDIO_BGM_STYLE: 1 속보 시그널 · 2 수사 드라마 · 3 탐사보도 · 4 긴박 리포트 · 5 정보 브리핑
+_SR = 22050
+
+
+def _write_wav(path: str, data: list, sr: int = _SR) -> None:
+    import struct
+    import wave
+    peak = max(1e-9, max(abs(x) for x in data))
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(b"".join(struct.pack("<h", int(x / peak * 0.9 * 32767)) for x in data))
+
+
+def _mf(m: float) -> float:
+    return 440.0 * 2 ** ((m - 69) / 12)
+
+
+_SINE = (1.0, 0.25, 0.08)
+_SAW = (1.0, 0.5, 0.33, 0.25, 0.2, 0.16, 0.12)
+_SQR = (1.0, 0.0, 0.33, 0.0, 0.2, 0.0, 0.14)
+_BRASS = (1.0, 0.7, 0.5, 0.35, 0.25, 0.15)
+
+
+def _tone(buf, start, dur, m, amp, harm=_SINE, attack=0.005, decay=0.0, release=0.03, sr=_SR):
+    import math
+    i0, n = int(start * sr), int(dur * sr)
+    w = 2 * math.pi * _mf(m) / sr
+    hs = [(h + 1, a) for h, a in enumerate(harm) if a]
+    for k in range(n):
+        i = i0 + k
+        if i >= len(buf):
+            break
+        t = k / sr
+        env = min(1.0, t / attack) if attack else 1.0
+        if decay:
+            env *= math.exp(-t / decay)
+        if t > dur - release:
+            env *= max(0.0, (dur - t) / release)
+        if env < 1e-4:
+            continue
+        buf[i] += amp * env * sum(a * math.sin(h * w * k) for h, a in hs)
+
+
+def _kick(buf, start, amp, sr=_SR):
+    import math
+    i0, ph = int(start * sr), 0.0
+    for k in range(int(0.3 * sr)):
+        if i0 + k >= len(buf):
+            break
+        t = k / sr
+        ph += 2 * math.pi * (45 + 100 * math.exp(-t / 0.025)) / sr
+        buf[i0 + k] += amp * math.exp(-t / 0.11) * math.sin(ph)
+
+
+def _noise(buf, start, amp, decay, rnd, dur=0.15, hp=True, sr=_SR):
+    import math
+    i0, prev = int(start * sr), 0.0
+    for k in range(int(dur * sr)):
+        if i0 + k >= len(buf):
+            break
+        x = rnd.random() * 2 - 1
+        y, prev = (x - prev if hp else x), x
+        buf[i0 + k] += amp * math.exp(-k / sr / decay) * y
+
+
+def _snare(buf, start, amp, rnd):
+    _noise(buf, start, amp, 0.07, rnd, dur=0.2)
+    _tone(buf, start, 0.12, 55, amp * 0.6, attack=0.001, decay=0.04)
+
+
+def _style(n: int):
+    """(시작 시그널, 반복 반주) 두 목록을 돌려줌"""
+    import random
+    rnd = random.Random(n)
+    if n == 1:      # 속보 시그널: 128BPM D단조, 16분음표 베이스 맥박 + 팀파니 + 스타카토 화음
+        bpm, prog = 128, [(50, 53, 57), (46, 50, 53), (48, 52, 55), (50, 53, 57)]
+    elif n == 2:    # 수사 드라마: 120BPM A단조, 째깍 초침 + 낮은 현악 스타카토 + 긴장 패드
+        bpm, prog = 120, [(45, 48, 52), (41, 45, 48), (38, 41, 45), (40, 44, 47)]
+    elif n == 3:    # 탐사보도: 132BPM E단조, 킥·하이햇 + 16분 아르페지오 + 저음 드론
+        bpm, prog = 132, [(40, 43, 47), (36, 40, 43), (45, 48, 52), (47, 51, 54)]
+    elif n == 4:    # 긴박 리포트: 140BPM C단조, 당김음 금관 스탭 + 8분 베이스 + 스네어
+        bpm, prog = 140, [(48, 51, 55), (44, 48, 51), (51, 55, 58), (43, 47, 50)]
+    else:           # 정보 브리핑: 124BPM G단조, 피아노 8분 반복 + 신스 베이스 + 가벼운 비트
+        bpm, prog = 124, [(43, 46, 50), (39, 43, 46), (46, 50, 53), (41, 45, 48)]
+    beat = 60.0 / bpm
+    bar = 4 * beat
+    # ── 반주(4마디 × 2바퀴) ──
+    bars = prog * 2
+    b = [0.0] * int(len(bars) * bar * _SR)
+    for c, ch in enumerate(bars):
+        t0 = c * bar
+        root = ch[0] - 12
+        if n == 1:
+            for q in range(16):
+                _tone(b, t0 + q * beat / 4, beat / 4 * 0.8, root, 0.30 if q % 4 == 0 else 0.18, _SAW, decay=0.08)
+            for q in (0, 2):
+                _tone(b, t0 + q * beat, 0.6, root - 12, 0.5, _SINE, attack=0.002, decay=0.35)   # 팀파니
+            for q in (1.5, 3.5):
+                for m in ch:
+                    _tone(b, t0 + q * beat, 0.18, m + 12, 0.07, _BRASS, decay=0.08)
+            for q in range(8):
+                _noise(b, t0 + q * beat / 2, 0.05, 0.02, rnd, dur=0.04)
+        elif n == 2:
+            for q in range(16):
+                _noise(b, t0 + q * beat / 4, 0.09 if q % 2 == 0 else 0.04, 0.008, rnd, dur=0.02)   # 초침
+            pat = [0, 0, 3, 0, 0, 0, 3, 5]
+            for q, d in enumerate(pat):
+                _tone(b, t0 + q * beat / 2, beat / 2 * 0.6, ch[0] + d - 12, 0.22, _SAW, decay=0.12)
+            for m in ch:
+                _tone(b, t0, bar, m + 12, 0.05, _SINE, attack=0.4, release=0.2)
+            _tone(b, t0, bar, ch[0] + 23, 0.025, _SINE, attack=0.6, release=0.3)               # 높은 긴장음
+            _kick(b, t0, 0.35)
+        elif n == 3:
+            for q in range(4):
+                _kick(b, t0 + q * beat, 0.5)
+                _noise(b, t0 + q * beat + beat / 2, 0.10, 0.03, rnd, dur=0.06)
+            arp = [ch[0], ch[1], ch[2], ch[2] + 5]
+            for q in range(16):
+                _tone(b, t0 + q * beat / 4, beat / 4 * 0.7, arp[q % 4] + 12, 0.10, _SQR, decay=0.07)
+            _tone(b, t0, bar, root, 0.20, _SAW, attack=0.05, release=0.05)
+        elif n == 4:
+            for q in range(8):
+                _tone(b, t0 + q * beat / 2, beat / 2 * 0.7, root, 0.25, _SAW, decay=0.1)
+            for q in (0, 1.5, 3, 3.5):
+                for m in ch:
+                    _tone(b, t0 + q * beat, 0.16, m + 12, 0.08, _BRASS, decay=0.07)
+            _kick(b, t0, 0.5)
+            _kick(b, t0 + 2.5 * beat, 0.4)
+            for q in (1, 3):
+                _snare(b, t0 + q * beat, 0.18, rnd)
+            for q in range(8):
+                _noise(b, t0 + q * beat / 2, 0.04, 0.015, rnd, dur=0.03)
+        else:
+            pat = [ch[0] + 12, ch[2] + 12, ch[1] + 12, ch[2] + 12] * 2
+            for q, m in enumerate(pat):
+                _tone(b, t0 + q * beat / 2, beat / 2, m, 0.12, _SINE, decay=0.25)               # 피아노 느낌
+            for q in (0, 1.5, 2, 3):
+                _tone(b, t0 + q * beat, beat * 0.45, root, 0.22, _SQR, decay=0.15)
+            _kick(b, t0, 0.35)
+            _kick(b, t0 + 2 * beat, 0.3)
+            for q in range(8):
+                _noise(b, t0 + q * beat / 2, 0.035, 0.02, rnd, dur=0.04)
+    # ── 시작 시그널(약 3초) ──
+    j = [0.0] * int(3.4 * _SR)
+    ch = prog[0]
+    if n in (1, 4):          # 빠른 상승 스탭 3번 + 화음 히트
+        for i, m in enumerate((ch[0], ch[1], ch[2])):
+            for x in (0, 12):
+                _tone(j, i * 0.12, 0.1, m + x, 0.18, _BRASS, decay=0.06)
+        for m in ch + (ch[0] + 12, ch[0] - 12, ch[0] - 24):
+            _tone(j, 0.42, 2.6, m, 0.13, _BRASS, attack=0.004, decay=0.7, release=0.4)
+        _tone(j, 0.42, 2.0, ch[0] - 24, 0.5, _SINE, attack=0.002, decay=0.5)
+        _noise(j, 0.42, 0.10, 0.2, rnd, dur=0.6, hp=False)
+    elif n == 2:             # 낮은 '둥-' 두 번 + 긴장 화음
+        for t in (0.0, 0.6):
+            _tone(j, t, 0.9, ch[0] - 24, 0.6, _SINE, attack=0.002, decay=0.4)
+            _tone(j, t, 0.9, ch[0] - 12, 0.25, _SAW, attack=0.002, decay=0.25)
+        for m in (ch[0], ch[0] + 1, ch[2]):
+            _tone(j, 1.2, 2.1, m + 12, 0.08, _SAW, attack=0.3, release=0.5)
+    elif n == 3:             # 빠른 아르페지오 상승 + 킥
+        for i in range(8):
+            _tone(j, i * 0.07, 0.12, ch[i % 3] + 12 * (i // 3), 0.15, _SQR, decay=0.06)
+        _kick(j, 0.6, 0.7)
+        for m in ch:
+            _tone(j, 0.6, 2.5, m + 12, 0.1, _SAW, attack=0.01, decay=0.8, release=0.4)
+    else:                    # 피아노 3음 모티프 + 화음
+        for i, m in enumerate((ch[2] + 12, ch[1] + 12, ch[0] + 24)):
+            _tone(j, i * 0.18, 0.5, m, 0.3, _SINE, decay=0.3)
+        _kick(j, 0.6, 0.5)
+        for m in ch + (ch[0] + 12,):
+            _tone(j, 0.6, 2.6, m + 12, 0.15, _SINE, attack=0.003, decay=0.9, release=0.4)
+        _tone(j, 0.6, 2.6, ch[0] - 12, 0.3, _SQR, decay=0.6)
+    return j, b
+
+
+def make_bgm(folder: str, style: int = 1):
+    j, b = _style(style)
+    jp, bp = os.path.join(folder, f"bgm_intro{style}.wav"), os.path.join(folder, f"bgm_bed{style}.wav")
+    _write_wav(jp, j)
+    _write_wav(bp, b)
+    return jp, bp
+
+
+def _ffmpeg() -> str:
+    """ffmpeg 실행 파일 위치(없으면 pip의 imageio-ffmpeg에 든 것)"""
+    import shutil
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return ""
+
+
+def _duration(ff: str, path: str) -> float:
+    import subprocess
+    err = subprocess.run([ff, "-hide_banner", "-i", path], capture_output=True, text=True, timeout=60).stderr
+    h, m, sec = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", err).groups()
+    return int(h) * 3600 + int(m) * 60 + float(sec)
+
+
+def add_bgm(voice: str) -> str:
+    """음성 앞에 시작 음, 밑에 작은 반주, 끝에 반주가 잠깐 커졌다 사라지게. 실패하면 음성만"""
+    import subprocess
+    ff = _ffmpeg()
+    if not AUDIO_BGM or not ff:
+        return voice
+    try:
+        folder = os.path.dirname(os.path.abspath(voice))
+        jp, bp = make_bgm(folder, AUDIO_BGM_STYLE)
+        dur = _duration(ff, voice)
+        lead, tail = 2.8, 4.0
+        total = lead + dur + tail
+        out = voice[:-4] + "_bgm.mp3"
+        fc = (f"[0:a]aresample=44100,aformat=channel_layouts=mono,adelay={int(lead * 1000)}:all=1[v];"
+              f"[1:a]aresample=44100,volume=0.55[j];"
+              f"[2:a]aresample=44100,atrim=0:{total:.2f},"
+              f"volume='0.10+0.12*clip((t-{lead + dur:.2f})/0.8,0,1)':eval=frame,"
+              f"afade=t=in:st=1.5:d=1.5,afade=t=out:st={total - 2.5:.2f}:d=2.5[b];"
+              f"[v][j][b]amix=inputs=3:duration=longest:normalize=0,alimiter=limit=0.95[o]")
+        subprocess.run([ff, "-y", "-v", "error", "-i", voice, "-i", jp, "-stream_loop", "-1", "-i", bp,
+                        "-filter_complex", fc, "-map", "[o]", "-t", f"{total:.2f}", "-ac", "1", "-b:a", "96k", out],
+                       check=True, capture_output=True, timeout=180)
+        if os.path.getsize(out) > 1000:
+            return out
+    except Exception as e:
+        print(f"[배경음악 생략] {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
+    return voice
+
+
+def to_voice(mp3: str) -> str:
+    """텔레그램 '음성 메시지'(ogg/opus)로 변환. 음악 파일(sendAudio)은 끝나면 채팅방의 이전 음악이
+    이어서 재생되지만, 음성 메시지는 더 새로운 음성 메시지로만 넘어가므로 최신 브리핑은 끝나면 멈춤"""
+    import subprocess
+    ff = _ffmpeg()
+    if not ff:
+        return ""
+    out = mp3[:-4] + ".ogg"
+    try:
+        subprocess.run([ff, "-y", "-v", "error", "-i", mp3, "-ac", "1", "-ar", "48000",
+                        "-c:a", "libopus", "-b:a", "48k", "-application", "audio", out],
+                       check=True, capture_output=True, timeout=180)
+        return out if os.path.getsize(out) > 1000 else ""
+    except Exception as e:
+        print(f"[음성 메시지 변환 실패] {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
+        return ""
+
+
+def send_audio(path: str, caption: str, title: str) -> None:
+    ogg = to_voice(path)
+    if ogg:                                        # 음성 메시지로 발송(재생이 끝나면 멈춤)
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendVoice"
+        field, fpath, mime = "voice", ogg, "audio/ogg"
+        data = {"chat_id": TG_CHAT.strip(), "caption": caption, "parse_mode": "HTML"}
+    else:                                          # 변환이 안 되면 예전처럼 음악 파일로
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendAudio"
+        field, fpath, mime = "audio", path, "audio/mpeg"
+        data = {"chat_id": TG_CHAT.strip(), "caption": caption, "parse_mode": "HTML",
+                "title": title, "performer": "중수청 브리핑"}
+    for _ in range(2):
+        with open(fpath, "rb") as f:
+            r = requests.post(url, data=data, files={field: (os.path.basename(fpath), f, mime)}, timeout=120)
+        if r.ok:
+            return
+        print(f"[텔레그램 음성 오류] {r.status_code}: {r.text[:200]}", file=sys.stderr)
+        data.pop("parse_mode", None)               # 서식 문제일 수 있어 서식 없이 다시
+        data["caption"] = html.unescape(re.sub(r"</?b>", "", caption))
+    r.raise_for_status()
+
+
+def audio_briefing(state: dict, now: dt.datetime) -> None:
+    label = audio_due(state, now)
+    if not label:
+        return
+    since = dt.datetime.fromisoformat(state["audio_cut"]) if state.get("audio_cut") else now - dt.timedelta(hours=14)
+    recs = [from_record(r) for r in state.get("audio_log", []) if dt.datetime.fromisoformat(r["found"]) > since]
+    for r in recs:                                 # 실행마다 AI 묶음 번호가 달라서 실행 시각과 함께 구분
+        r["group"] = f"{r['found']}|{r['group']}" if r.get("group") is not None else None
+    wd = "월화수목금토일"
+    span = (f"{since:%H:%M}~{now:%H:%M}" if since.date() == now.date() else
+            f"{since:%m.%d.}({wd[since.weekday()]}) {since:%H:%M} ~ {now:%m.%d.}({wd[now.weekday()]}) {now:%H:%M}")
+    head = f"🎧 <b>중수청 {label} 브리핑</b>\n{span} 중수청 기사 "
+    if not recs:
+        send_telegram(head + "없음")
+        print(f"음성 브리핑({label}): 새 중수청 기사 없음")
+    else:
+        groups = group_articles(sorted(recs, key=lambda x: x["found"]))
+        groups.sort(key=lambda g: -len(g))         # 여러 언론이 다룬 사안부터(같으면 시간순 유지)
+        use, more = groups[:AUDIO_MAX], len(groups) - AUDIO_MAX
+        more = max(more, 0)
+        script = speakable(audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
+                                        ("아침" if label == "시험" else label), since, now, more))
+        lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})" for n, g in enumerate(use, 1)]
+        caption = head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
+        if more:
+            caption += f"\n외 {more}개 사안"
+        if len(caption) > 1000:                    # 텔레그램 설명란 1,024자 제한
+            caption = caption[:990].rsplit("\n", 1)[0] + "\n…"
+        # 원고 보관(최근 10회, state.json의 audio_scripts) → 나중에 글로 다시 볼 수 있게
+        state["audio_scripts"] = (state.get("audio_scripts", []) + [[now.isoformat(), label, script]])[-10:]
+        path = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
+        try:
+            engine = tts_mp3(script, path)
+            mixed = add_bgm(path)
+            if mixed != path:
+                engine += " + 배경음악"
+                path = mixed
+            send_audio(path, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
+            print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
+        except Exception as e:                     # 음성 실패 시 원고를 글로 대신 보냄
+            print(f"[음성 생성 실패] {type(e).__name__}: {e}", file=sys.stderr)
+            msg = head + f"{len(recs)}건 (음성 생성 실패, 원고로 대신 보냅니다)\n\n" + html.escape(script)
+            for i in range(0, len(msg), 3900):
+                send_telegram(msg[i:i + 3900])
+    if label != "시험":                            # 시험 발송은 다음 정기 브리핑 범위에 영향 없음
+        state["audio_cut"] = now.isoformat()
+        state["last_audio"] = now.isoformat()
+
+
 # ── 실행 ─────────────────────────────────────────────────────
 def main() -> int:
     missing = [k for k, v in {"TELEGRAM_BOT_TOKEN": TG_TOKEN, "TELEGRAM_CHAT_ID": TG_CHAT}.items() if not v]
@@ -705,6 +1203,7 @@ def main() -> int:
         for msg in format_messages(urgent, now, head):
             send_telegram(msg)
         print(f"중수청 {len(urgent)}건 즉시 발송")
+        state.setdefault("audio_log", []).extend(to_record(a, now) for a in urgent)
     # ② 공소청·형사사법 기사: 대기 목록에 쌓았다가 마지막 모음 발송 후 DIGEST_MINUTES 지나면 발송
     shown = urgent
     for a in arts:
@@ -735,6 +1234,14 @@ def main() -> int:
               f"{DIGEST_MINUTES - int((now - last).total_seconds() // 60)}분)")
     if not arts:
         print("새 기사 없음")
+
+    try:
+        audio_briefing(state, now)
+    except Exception as e:                         # 음성 문제로 알림 전체가 멈추지 않게
+        print(f"[음성 브리핑 오류] {type(e).__name__}: {e}", file=sys.stderr)
+    keep_a = now - dt.timedelta(days=7)            # 음성용 기록은 7일·최대 300건만 보관(연휴 대비)
+    state["audio_log"] = [r for r in state.get("audio_log", [])
+                          if dt.datetime.fromisoformat(r["found"]) >= keep_a][-300:]
 
     state.pop("daily", None), state.pop("daily_sent", None)   # 예전 대응 검토 기록 정리
     state["last_run"] = now.isoformat()
