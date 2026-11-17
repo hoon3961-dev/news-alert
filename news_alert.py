@@ -145,6 +145,12 @@ AUDIO_TEST = (os.getenv("AUDIO_TEST") or "").strip().lower() == "true"   # Actio
 GOOGLE_TTS_KEY = (os.getenv("GOOGLE_TTS_KEY") or "").strip()            # 있으면 구글 음성 사용
 AUDIO_BGM = (os.getenv("AUDIO_BGM") or "on").strip().lower() != "off"   # 배경음악(직접 합성한 음악이라 저작권 문제 없음)
 AUDIO_BGM_STYLE = int(os.getenv("AUDIO_BGM_STYLE") or "1")              # 1 속보 시그널(기본) ~ 5
+# 외부 무료 음원 쓰기: AUDIO_BGM_URL(쉼표로 여러 개 → 브리핑마다 돌아가며) 또는 저장소 bgm 폴더의 mp3
+# 저장소가 공개라 음원 파일을 올리면 남이 내려받을 수 있음 → 라이선스상 재배포 금지 음원은 URL 방식으로
+AUDIO_BGM_URL = os.getenv("AUDIO_BGM_URL") or ""
+AUDIO_RATE = float(os.getenv("AUDIO_RATE") or "0.95")    # 읽는 속도(1.0 보통, 0.9 느리게)
+# 발음 사전: '바꿀말=읽을말'을 쉼표·줄바꿈으로 구분. 예) NDFAS=엔디파스, 이드러그=이 드러그
+AUDIO_DICT = os.getenv("AUDIO_DICT") or ""
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -784,6 +790,8 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "- 괄호, 따옴표, 대괄호, 기호(·, →, ~, /), 영문 약어는 쓰지 않는다. [단독] 표시는 읽지 않는다.\n"
             "[금지]\n"
             "- 제목·요약에 없는 사실, 숫자, 평가, 전망을 지어내지 않는다. 앵커의 개인 의견을 넣지 않는다.\n"
+            "- 한자 약칭(李, 尹, 故, 與, 野, 檢)은 한글로 풀어 쓴다(이재명 대통령, 고, 여당, 야당, 검찰). 영문 약어는 한글 소리로 쓴다(NDFAS는 엔디파스).\n"
+            "- 첫머리, 각 사안, 맺음말은 각각 한 문단으로 쓰고 문단 사이는 빈 줄로 구분한다(읽을 때 쉬는 자리).\n"
             "- 제목, 번호, 소제목, 마크다운 기호 없이 소리 내어 읽을 문장만 출력한다. 전체 1,800자 이내.\n\n"
             + "\n\n".join(items)
         )
@@ -842,8 +850,34 @@ def polite(text: str) -> str:
     return "".join(out)
 
 
+_PRON = [  # (정규식, 바꿀 말) — 귀로 들을 때 어색한 표기를 소리 나는 대로
+    (r"([A-Za-z]{2,})\s?\(([가-힣\s]{1,20})\)", r"\2"),           # NDFAS(엔디파스) → 엔디파스
+    (r"([가-힣]+)\s?\(([A-Za-z0-9\s\-]{1,20})\)", r"\1"),          # 엔디파스(NDFAS) → 엔디파스
+    (r"\(([\u4e00-\u9fff]{1,4})\)", ""),                           # 고(故) → 고
+    (r"李\s*대통령", "이재명 대통령"), (r"李", "이재명 대통령"), (r"尹\s*전\s*대통령", "윤석열 전 대통령"),
+    (r"尹", "윤석열 전 대통령"), (r"故\s*", "고 "), (r"與", "여당"), (r"野", "야당"), (r"檢", "검찰"),
+    (r"警", "경찰"), (r"靑", "청와대"), (r"軍", "군"), (r"美", "미국"), (r"中(?=[\s,])", "중국"), (r"日(?=[\s,])", "일본"),
+    (r"NDFAS", "엔디파스"), (r"KOLAS", "콜라스"), (r"\bAI\b", "에이아이"), (r"\bCCTV\b", "씨씨티비"),
+    (r"\bTF\b", "티에프"), (r"\bSNS\b", "에스엔에스"), (r"\bMOU\b", "업무협약"),
+    (r"(\d{1,2})\.\s?(\d{1,2})\.(?!\d)", r"\1월 \2일"),          # 11.17. → 11월 17일
+    (r"(\d{1,2}):(\d{2})", r"\1시 \2분"),                         # 9:20 → 9시 20분
+    (r"(\d)\s?%", r"\1퍼센트"), (r"(\d)\s?~\s?(\d)", r"\1에서 \2"),
+    (r"\(([^)]{0,30})\)", r", \1, "), (r"[/|]", ", "), (r"&", " 그리고 "),
+]
+
+
+def pronounce(text: str) -> str:
+    pairs = [x.split("=", 1) for x in re.split(r"[,\n]", AUDIO_DICT) if "=" in x]
+    for a, b in pairs:                             # 사용자 사전 먼저
+        if a.strip():
+            text = text.replace(a.strip(), b.strip())
+    for pat, sub in _PRON:
+        text = re.sub(pat, sub, text)
+    return re.sub(r"\s*,\s*,", ",", text)
+
+
 def speakable(text: str) -> str:
-    text = polite(text)
+    text = pronounce(polite(text))
     text = re.sub(r"(?m)^\s*(#+|[-*•]|\d+[.)])\s+", "", text).replace("**", "")
     text = re.sub(r"[\[\]【】〈〉<>\"“”‘’'「」]", " ", text)
     text = text.replace("·", ", ").replace("→", ", ").replace("…", ", ")
@@ -855,32 +889,54 @@ def tts_mp3(text: str, path: str) -> str:
     if GOOGLE_TTS_KEY:
         import base64
         voice = AUDIO_VOICE or "ko-KR-Neural2-A"
-        chunks, cur = [], ""
-        for sent in re.split(r"(?<=[.?!다요])\s+", text):     # 구글은 한 번에 5,000바이트까지
-            if cur and len((cur + " " + sent).encode()) > 4500:
+        paras = [p.strip() for p in re.split(r"\n\s*\n|\n", text) if p.strip()]
+        pieces = []                                # 긴 문단은 문장 단위로 쪼갬(구글은 한 번에 5,000바이트까지)
+        for p in paras:
+            if len(p.encode()) <= 3500:
+                pieces.append(p)
+                continue
+            cur = ""
+            for sent in re.split(r"(?<=[.?!])\s+", p):
+                if cur and len((cur + " " + sent).encode()) > 3500:
+                    pieces.append(cur)
+                    cur = sent
+                else:
+                    cur = (cur + " " + sent).strip()
+            if cur:
+                pieces.append(cur)
+        chunks, cur = [], []                       # 문단 경계에서만 나눠 보냄(억양이 중간에 끊기지 않게)
+        for p in pieces:
+            if cur and len(" [pause long] ".join(cur + [p]).encode()) > 4200:
                 chunks.append(cur)
-                cur = sent
+                cur = [p]
             else:
-                cur = (cur + " " + sent).strip()
+                cur.append(p)
         if cur:
             chunks.append(cur)
+        use_markup = "chirp3" in voice.lower()     # Chirp 3 HD는 쉼 표시([pause long]) 지원
         with open(path, "wb") as f:
             for c in chunks:
-                r = requests.post(
-                    "https://texttospeech.googleapis.com/v1/text:synthesize",
-                    params={"key": GOOGLE_TTS_KEY},
-                    json={"input": {"text": c}, "voice": {"languageCode": "ko-KR", "name": voice},
-                          "audioConfig": {"audioEncoding": "MP3"}},
-                    timeout=60,
-                )
+                for mode in (["markup", "text"] if use_markup else ["text"]):
+                    body = " [pause long] ".join(c) if mode == "markup" else "\n\n".join(c)
+                    r = requests.post(
+                        "https://texttospeech.googleapis.com/v1/text:synthesize",
+                        params={"key": GOOGLE_TTS_KEY},
+                        json={"input": {mode: body}, "voice": {"languageCode": "ko-KR", "name": voice},
+                              "audioConfig": {"audioEncoding": "MP3", "speakingRate": AUDIO_RATE}},
+                        timeout=90,
+                    )
+                    if r.ok:
+                        break
+                    print(f"[구글 음성 {mode} 실패] {r.status_code}: {r.text[:150]}", file=sys.stderr)
                 if not r.ok:
                     raise RuntimeError(f"구글 음성 오류 {r.status_code}: {r.text[:200]}")
                 f.write(base64.b64decode(r.json()["audioContent"]))
-        return f"구글 {voice}"
+        return f"구글 {voice}" + (" 쉼표시" if use_markup and mode == "markup" else "") + f" 속도{AUDIO_RATE}"
     import asyncio
     import edge_tts
     voice = AUDIO_VOICE or "ko-KR-SunHiNeural"
-    asyncio.run(edge_tts.Communicate(text, voice).save(path))
+    rate = f"{round((AUDIO_RATE - 1) * 100):+d}%"
+    asyncio.run(edge_tts.Communicate(re.sub(r"\n\s*\n", "\n", text), voice, rate=rate).save(path))
     if os.path.getsize(path) < 1000:
         raise RuntimeError("음성 파일이 비어 있음")
     return f"edge {voice}"
@@ -1093,13 +1149,59 @@ def _duration(ff: str, path: str) -> float:
     return int(h) * 3600 + int(m) * 60 + float(sec)
 
 
-def add_bgm(voice: str) -> str:
+def pick_music(folder: str, now: dt.datetime) -> str:
+    """사용자가 정한 음원(URL 또는 bgm 폴더) 중 이번 브리핑에 쓸 것 하나. 없으면 ''"""
+    import glob
+    urls = [u.strip() for u in AUDIO_BGM_URL.split(",") if u.strip().startswith("http")]
+    files = sorted(glob.glob("bgm/*.mp3") + glob.glob("bgm/*.m4a") + glob.glob("bgm/*.wav"))
+    items = urls + files
+    if not items:
+        return ""
+    pick = items[(now.toordinal() * 2 + (now.hour >= 12)) % len(items)]   # 브리핑마다 돌아가며
+    if not pick.startswith("http"):
+        return pick
+    try:
+        r = requests.get(pick, headers=UA, timeout=60)
+        r.raise_for_status()
+        if len(r.content) < 20000:
+            raise ValueError(f"파일이 너무 작음({len(r.content)}바이트) — 음원 직접 주소가 아닐 수 있음")
+        path = os.path.join(folder, "bgm_download" + os.path.splitext(urlparse(pick).path)[1][:5])
+        with open(path, "wb") as f:
+            f.write(r.content)
+        return path
+    except Exception as e:
+        print(f"[배경음악 내려받기 실패] {pick[:80]} {type(e).__name__}: {e}", file=sys.stderr)
+        return ""
+
+
+def add_bgm(voice: str, now: dt.datetime = None) -> str:
     """음성 앞에 시작 음, 밑에 작은 반주, 끝에 반주가 잠깐 커졌다 사라지게. 실패하면 음성만"""
     import subprocess
     ff = _ffmpeg()
     if not AUDIO_BGM or not ff:
         return voice
     try:
+        music = pick_music(os.path.dirname(os.path.abspath(voice)), now or dt.datetime.now(KST))
+        if music:                                  # 외부 음원: 처음 3초는 크게 → 목소리 밑에 작게 → 끝에 다시 커졌다 사라짐
+            try:
+                dur = _duration(ff, voice)
+                lead, tail = 3.0, 4.0
+                total, end = lead + dur + tail, lead + dur
+                out = voice[:-4] + "_bgm.mp3"
+                vol = (f"if(lt(t,{lead - 0.8:.2f}),0.6,if(lt(t,{lead:.2f}),0.6-0.48*(t-{lead - 0.8:.2f})/0.8,"
+                       f"0.12+0.2*clip((t-{end:.2f})/1.0,0,1)))")
+                fc = (f"[0:a]aresample=44100,aformat=channel_layouts=mono,adelay={int(lead * 1000)}:all=1[v];"
+                      f"[1:a]aresample=44100,aformat=channel_layouts=mono,atrim=0:{total:.2f},asetpts=PTS-STARTPTS,"
+                      f"volume='{vol}':eval=frame,afade=t=in:st=0:d=0.5,afade=t=out:st={total - 2.5:.2f}:d=2.5[b];"
+                      f"[v][b]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95[o]")
+                subprocess.run([ff, "-y", "-v", "error", "-i", voice, "-stream_loop", "-1", "-i", music,
+                                "-filter_complex", fc, "-map", "[o]", "-t", f"{total:.2f}", "-ac", "1", "-b:a", "96k", out],
+                               check=True, capture_output=True, timeout=180)
+                if os.path.getsize(out) > 1000:
+                    print(f"배경음악: {os.path.basename(music) if not AUDIO_BGM_URL else '지정 음원'} 사용")
+                    return out
+            except Exception as e:
+                print(f"[지정 배경음악 실패 → 기본 음악 사용] {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
         folder = os.path.dirname(os.path.abspath(voice))
         jp, bp = make_bgm(folder, AUDIO_BGM_STYLE)
         dur = _duration(ff, voice)
@@ -1167,6 +1269,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
     if not label:
         return
     since = dt.datetime.fromisoformat(state["audio_cut"]) if state.get("audio_cut") else now - dt.timedelta(hours=14)
+    if label == "시험":                            # 시험은 언제 눌러도 들어 볼 수 있게 최근 24시간 기사로
+        since = now - dt.timedelta(hours=24)
     recs = [from_record(r) for r in state.get("audio_log", []) if dt.datetime.fromisoformat(r["found"]) > since]
     for r in recs:                                 # 실행마다 AI 묶음 번호가 달라서 실행 시각과 함께 구분
         r["group"] = f"{r['found']}|{r['group']}" if r.get("group") is not None else None
@@ -1196,7 +1300,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         path = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
         try:
             engine = tts_mp3(script, path)
-            mixed = add_bgm(path)
+            state["audio_scripts"][-1].append(engine)
+            mixed = add_bgm(path, now)
             if mixed != path:
                 engine += " + 배경음악"
                 path = mixed
