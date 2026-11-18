@@ -972,7 +972,8 @@ def tts_mp3(text: str, path: str) -> str:
                 cur.append(p)
         if cur:
             chunks.append(cur)
-        use_markup = "chirp3" in voice.lower()     # Chirp 3 HD는 쉼 표시([pause long]) 지원
+        # 쉼 표시([pause long])는 Chirp 3 HD가 그 자리에 '음·어' 같은 군말을 넣는 경우가 있어 기본은 끔(AUDIO_PAUSE=on으로 켜기)
+        use_markup = "chirp3" in voice.lower() and (os.getenv("AUDIO_PAUSE") or "off").strip().lower() == "on"
         with open(path, "wb") as f:
             for c in chunks:
                 for mode in (["markup", "text"] if use_markup else ["text"]):
