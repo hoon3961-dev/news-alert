@@ -948,12 +948,26 @@ def speakable(text: str) -> str:
 
 SENT_GAP = float(os.getenv("AUDIO_SENT_GAP") or "0.35")   # 문장 사이 쉼(초)
 PARA_GAP = float(os.getenv("AUDIO_PARA_GAP") or "0.9")    # 문단(사안) 사이 쉼(초)
+COMMA_GAP = float(os.getenv("AUDIO_COMMA_GAP") or "0.22")  # 쉼표 쉼(초). 0이면 쉼표에서 나누지 않음
+
+
+def _clauses(sent: str) -> list:
+    """문장을 쉼표 단위로 나눔. 너무 짧은 조각(6자 미만)은 앞뒤와 합쳐 어색하게 끊기지 않게 함"""
+    if COMMA_GAP <= 0:
+        return [sent]
+    out = []
+    for part in re.split(r"(?<=,)\s+", sent):
+        if out and (len(out[-1]) < 6 or len(part) < 6):
+            out[-1] += " " + part
+        else:
+            out.append(part)
+    return out
 
 
 def _google_by_sentence(paras: list, voice: str, path: str) -> str:
     """문장마다 따로 읽혀서 사이에 정해진 길이의 무음을 넣음.
     한 번에 긴 글을 보내면 음성 엔진이 마침표·문단을 무시하고 이어 읽거나 엉뚱한 곳에서 쉬는 일이 있어,
-    마침표와 문단 경계의 쉼을 프로그램이 직접 보장한다(쉼표 안쪽 억양은 엔진에 맡김)"""
+    마침표와 문단 경계의 쉼을 프로그램이 직접 보장한다(쉼표도 조각으로 나눠 짧은 쉼을 직접 넣음)"""
     import base64
     import io
     import subprocess
@@ -962,18 +976,22 @@ def _google_by_sentence(paras: list, voice: str, path: str) -> str:
     for pi, p in enumerate(paras):
         sents = [x.strip() for x in re.split(r"(?<=[.?!])\s+", p) if x.strip()]
         for si, sent in enumerate(sents):
-            r = requests.post(
-                "https://texttospeech.googleapis.com/v1/text:synthesize",
-                params={"key": GOOGLE_TTS_KEY},
-                json={"input": {"text": sent}, "voice": {"languageCode": "ko-KR", "name": voice},
-                      "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": sr,
-                                      "speakingRate": AUDIO_RATE}},
-                timeout=60,
-            )
-            if not r.ok:
-                raise RuntimeError(f"구글 음성 오류 {r.status_code}: {r.text[:200]}")
-            with wave.open(io.BytesIO(base64.b64decode(r.json()["audioContent"]))) as w:
-                pcm += w.readframes(w.getnframes())
+            parts = _clauses(sent)
+            for ci, part in enumerate(parts):
+                r = requests.post(
+                    "https://texttospeech.googleapis.com/v1/text:synthesize",
+                    params={"key": GOOGLE_TTS_KEY},
+                    json={"input": {"text": part}, "voice": {"languageCode": "ko-KR", "name": voice},
+                          "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": sr,
+                                          "speakingRate": AUDIO_RATE}},
+                    timeout=60,
+                )
+                if not r.ok:
+                    raise RuntimeError(f"구글 음성 오류 {r.status_code}: {r.text[:200]}")
+                with wave.open(io.BytesIO(base64.b64decode(r.json()["audioContent"]))) as w:
+                    pcm += w.readframes(w.getnframes())
+                if ci < len(parts) - 1:
+                    pcm += b"\x00\x00" * int(sr * COMMA_GAP)
             last = si == len(sents) - 1
             if not (last and pi == len(paras) - 1):
                 pcm += b"\x00\x00" * int(sr * (PARA_GAP if last else SENT_GAP))
@@ -988,7 +1006,7 @@ def _google_by_sentence(paras: list, voice: str, path: str) -> str:
         subprocess.run([ff, "-y", "-v", "error", "-i", wav, "-b:a", "96k", path], check=True, capture_output=True, timeout=120)
     else:
         os.replace(wav, path)
-    return f"구글 {voice} 문장별 쉼{SENT_GAP}/{PARA_GAP}초 속도{AUDIO_RATE}"
+    return f"구글 {voice} 문장별 쉼 쉼표{COMMA_GAP}/문장{SENT_GAP}/문단{PARA_GAP}초 속도{AUDIO_RATE}"
 
 
 def tts_mp3(text: str, path: str) -> str:
