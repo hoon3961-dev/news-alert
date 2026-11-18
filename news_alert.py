@@ -42,7 +42,8 @@ NAVER_ON = ((os.getenv("NAVER_SEARCH") or "on").strip().lower() != "off") and bo
 NAVER_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 NAVER_DISPLAY = int(os.getenv("NAVER_DISPLAY") or "100")   # 한 번에 받는 건수(최대 100)
 _NAVER_FAILS = [0]
-BGM_USED = [""]                                     # 이번 브리핑에 쓴 배경음악(기록용)                                 # 네이버 호출이 3번 실패하면 이번 실행에서는 더 부르지 않음
+BGM_USED = [""]                                     # 이번 브리핑에 쓴 배경음악(기록용)
+AUDIO_ERR: list = []                                # 음성 브리핑 중 AI 오류(state.json에 남겨 원인 확인용)                                 # 네이버 호출이 3번 실패하면 이번 실행에서는 더 부르지 않음
 DROPPED: list = []                                 # 이번 실행에서 거른 기사 [시각, 이유, 언론사, 제목] → state.json에 보관
 def _naver_queries() -> list:
     raw = os.getenv("NAVER_QUERIES")
@@ -700,6 +701,33 @@ def audio_due(state: dict, now: dt.datetime):
     return None
 
 
+def ask_claude(prompt: str, max_tokens: int = 8000, timeout: int = 150) -> str:
+    """음성 브리핑용 AI 호출. 답의 글 부분만 돌려줌(생각 블록 등은 건너뜀). 실패하면 오류 기록 후 ''"""
+    for attempt in range(2):
+        try:
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": CLAUDE_MODEL, "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=timeout,
+            )
+            if not r.ok:
+                raise RuntimeError(f"{r.status_code} {r.text[:300]}")
+            res = r.json()
+            text = "".join(c.get("text", "") for c in res.get("content", []) if c.get("type", "text") == "text").strip()
+            if not text:
+                raise RuntimeError(f"빈 답변 stop={res.get('stop_reason')} 블록={[c.get('type') for c in res.get('content', [])]}")
+            return text
+        except Exception as e:
+            msg = f"{type(e).__name__}: {str(e)[:300]}"
+            AUDIO_ERR.append(msg)
+            print(f"[음성 AI 오류] {msg}", file=sys.stderr)
+            time.sleep(5)
+    return ""
+
+
 _STOP = {"중수청", "공소청", "중대범죄수사청", "단독", "속보", "종합", "기자", "뉴스", "관련", "의혹", "사건", "논란"}
 
 
@@ -718,16 +746,7 @@ def audio_cluster(groups: list) -> list:
                   "묶음 순서는 중요도 순(기사 수가 많을수록, 중수청 조직·청장·주요 사건일수록 앞). "
                   "모든 번호가 정확히 한 번씩 들어가야 한다. JSON 배열만 출력: [[0,3],[1],[2,4]]\n\n" + lines)
         try:
-            r = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": CLAUDE_MODEL, "max_tokens": 1500,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=90,
-            )
-            r.raise_for_status()
-            text = "".join(c.get("text", "") for c in r.json().get("content", []))
+            text = ask_claude(prompt, 4000)
             data = json.loads(text[text.index("["): text.rindex("]") + 1])
             out, used = [], set()
             for c in data:
@@ -738,6 +757,7 @@ def audio_cluster(groups: list) -> list:
             out += [[i] for i in range(n) if i not in used]
             return out
         except Exception as e:
+            AUDIO_ERR.append(f"사안 묶기: {type(e).__name__}: {str(e)[:200]}")
             print(f"[음성 사안 묶기 AI 오류] {type(e).__name__}: {e}", file=sys.stderr)
     ws = [_words(g[0]["title"] + " " + (g[0]["summary"] or "")[:80]) for g in groups]
     out, where = [], {}
@@ -767,7 +787,7 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
         items.append(f"[사안 {n}] 제목: {g[0]['title']}\n관련 기사 {len(g)}건 요약:\n" + "\n".join(sums or ["(요약 없음)"]))
     wd = "월화수목금토일"[now.weekday()]
     intro = (f"{now.month}월 {now.day}일 {wd}요일 {label}, 중수청 언론보도 브리핑입니다. "
-             f"인공지능 목소리로 전해 드립니다. 이번 시간 중수청 관련 소식은 모두 {len(groups)}가지입니다.")
+             f"이번 시간 중수청 관련 소식은 모두 {len(groups)}가지입니다.")
     outro = (f"이 밖에도 중수청 관련 기사가 {more}건 더 있으니, 텔레그램 알림에서 확인해 주십시오. " if more else "") + \
         "지금까지 중수청 언론보도 브리핑이었습니다."
     if ANTHROPIC_KEY:
@@ -796,28 +816,14 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "- 제목, 번호, 소제목, 마크다운 기호 없이 소리 내어 읽을 문장만 출력한다. 전체 1,800자 이내.\n\n"
             + "\n\n".join(items)
         )
-        for attempt in range(2):
-            try:
-                r = requests.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
-                             "content-type": "application/json"},
-                    json={"model": CLAUDE_MODEL, "max_tokens": 3000,
-                          "messages": [{"role": "user", "content": prompt}]},
-                    timeout=120,
-                )
-                r.raise_for_status()
-                text = "".join(c.get("text", "") for c in r.json().get("content", [])).strip()
-                if len(text) > 50:
-                    return text
-            except Exception as e:
-                print(f"[음성 원고 AI 오류] {type(e).__name__}: {e}", file=sys.stderr)
-                time.sleep(5)
+        text = ask_claude(prompt)
+        if len(text) > 50:
+            return text
     parts = [intro]
     for n, g in enumerate(groups, 1):
         a = g[0]
         lead = "먼저, " if n == 1 else ("마지막 소식입니다. " if n == len(groups) else "다음 소식입니다. ")
-        parts.append(lead + (a["summary"] or a["title"]))
+        parts.append(lead + tidy_summary(a["summary"] or a["title"]))
     parts.append(outro)
     return "\n".join(parts)
 
@@ -831,6 +837,25 @@ _POLITE = [  # 문장 끝 개조식·해라체 → 합니다체 (AI가 놓쳐도
 ]
 
 
+_NOUN_M = ("처음", "다음", "지금", "이름", "사람", "마음", "느낌", "요금", "기금", "소금", "바람", "고름", "기름", "모임", "구름", "얼음", "걸음")
+_PAST = {"ㅣ": "ㅕ", "ㅗ": "ㅘ", "ㅜ": "ㅝ", "ㅡ": "ㅓ", "ㅏ": "ㅏ", "ㅓ": "ㅓ", "ㅐ": "ㅐ", "ㅕ": "ㅕ", "ㅔ": "ㅔ", "ㅚ": "ㅙ"}
+_V = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ"
+
+
+def _nominal_past(body: str) -> str:
+    """'밝힘'→'밝혔습니다', '나옴'→'나왔습니다', '전해짐'→'전해졌습니다' (받침 ㅁ 명사형 어미)"""
+    if len(body) < 2 or not ("가" <= body[-1] <= "힣") or body.endswith(_NOUN_M) or body.endswith(("함", "됨", "임", "음")):
+        return body
+    code = ord(body[-1]) - 0xAC00
+    if code % 28 != 16:                            # 받침 ㅁ이 아니면 그대로
+        return body
+    cho, jung = code // 588, (code % 588) // 28
+    v = _PAST.get(_V[jung])
+    if not v:
+        return body
+    return body[:-1] + chr(0xAC00 + cho * 588 + _V.index(v) * 28 + 20) + "습니다"   # 받침 ㅆ
+
+
 def polite(text: str) -> str:
     out = []
     for sent in re.split(r"(?<=[.!?\n])", text):
@@ -840,6 +865,7 @@ def polite(text: str) -> str:
             last2 = body[-2:]
             if len(last2) == 2 and last2[1] in "다음" and "가" <= last2[0] <= "힣" and (ord(last2[0]) - 0xAC00) % 28 == 20:
                 body = body[:-1] + "습니다"            # 밝혔다·밝혔음·보였다 등 받침 ㅆ + 다/음
+            body = _nominal_past(body)
             for pat, sub in ([] if body.endswith("니다") else _POLITE):
                 new = re.sub(pat + r"$", sub, body)
                 if new != body:
@@ -863,7 +889,7 @@ _PRON = [  # (정규식, 바꿀 말) — 귀로 들을 때 어색한 표기를 �
     (r"(\d{1,2})\.\s?(\d{1,2})\.(?!\d)", r"\1월 \2일"),          # 11.17. → 11월 17일
     (r"(\d{1,2}):(\d{2})", r"\1시 \2분"),                         # 9:20 → 9시 20분
     (r"(\d)\s?%", r"\1퍼센트"), (r"(\d)\s?~\s?(\d)", r"\1에서 \2"),
-    (r"\(([^)]{0,30})\)", r", \1, "), (r"[/|]", ", "), (r"&", " 그리고 "),
+    (r"\([^)]{0,40}\)", " "), (r"(^|[\s.])[-–•]\s+", r"\1 "), (r"[/|]", ", "), (r"&", " 그리고 "),
 ]
 
 
@@ -877,10 +903,20 @@ def pronounce(text: str) -> str:
     return re.sub(r"\s*,\s*,", ",", text)
 
 
+def tidy_summary(t: str) -> str:
+    """AI 요약(개조식)을 대체 원고용 문장으로: 글머리 '-' 없애고, '(제목 기준…)' 같은 메모 삭제, 줄마다 문장으로"""
+    t = re.sub(r"\((?:[^)]*(?:기준|본문|확인|추정)[^)]*)\)", "", t)
+    lines = [re.sub(r"^\s*[-*•·]\s*", "", x).strip() for x in t.split("\n")]
+    lines = [x if re.search(r"[.!?]$", x) else x + "." for x in lines if x]
+    return " ".join(lines)
+
+
 def speakable(text: str) -> str:
     text = pronounce(polite(text))
     text = re.sub(r"(?m)^\s*(#+|[-*•]|\d+[.)])\s+", "", text).replace("**", "")
-    text = re.sub(r"[\[\]【】〈〉<>\"“”‘’'「」]", " ", text)
+    text = re.sub(r"[\[(（]\s*(단독|속보|종합|사설|칼럼|기고|포토|영상)\s*[\])）]", " ", text)   # 머리표는 읽지 않음
+    text = re.sub(r"[\"“”‘’'「」『』]", "", text)                 # 따옴표는 붙여서('이드러그'도 → 이드러그도)
+    text = re.sub(r"[\[\]【】〈〉<>]", " ", text)
     text = text.replace("·", ", ").replace("→", ", ").replace("…", ", ")
     return re.sub(r"[ \t]+", " ", text).strip()
 
@@ -1315,6 +1351,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
             msg = head + f"{len(recs)}건 (음성 생성 실패, 원고로 대신 보냅니다)\n\n" + html.escape(script)
             for i in range(0, len(msg), 3900):
                 send_telegram(msg[i:i + 3900])
+    if AUDIO_ERR:
+        state["audio_errors"] = (state.get("audio_errors", []) + [[now.isoformat()] + AUDIO_ERR[-4:]])[-10:]
     if label != "시험":                            # 시험 발송은 다음 정기 브리핑 범위에 영향 없음
         state["audio_cut"] = now.isoformat()
         state["last_audio"] = now.isoformat()
