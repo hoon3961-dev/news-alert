@@ -908,6 +908,7 @@ _PRON = [  # (정규식, 바꿀 말) — 귀로 들을 때 어색한 표기를 �
     (r"李\s*대통령", "이재명 대통령"), (r"李", "이재명 대통령"), (r"尹\s*전\s*대통령", "윤석열 전 대통령"),
     (r"尹", "윤석열 전 대통령"), (r"故\s*", "고 "), (r"與", "여당"), (r"野", "야당"), (r"檢", "검찰"),
     (r"警", "경찰"), (r"靑", "청와대"), (r"軍", "군"), (r"美", "미국"), (r"中(?=[\s,])", "중국"), (r"日(?=[\s,])", "일본"),
+    (r"\b([A-Z])\s?씨", lambda m: {"A": "에이", "B": "비", "C": "씨", "D": "디", "E": "이", "F": "에프", "G": "지", "H": "에이치", "K": "케이", "L": "엘", "M": "엠", "P": "피", "S": "에스", "Y": "와이"}.get(m.group(1), m.group(1)) + " 씨"),
     (r"NDFAS", "엔디파스"), (r"KOLAS", "콜라스"), (r"\bAI\b", "에이아이"), (r"\bCCTV\b", "씨씨티비"),
     (r"\bTF\b", "티에프"), (r"\bSNS\b", "에스엔에스"), (r"\bMOU\b", "업무협약"),
     (r"(\d{1,2})\.\s?(\d{1,2})\.(?!\d)", r"\1월 \2일"),          # 11.17. → 11월 17일
@@ -945,6 +946,51 @@ def speakable(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
+SENT_GAP = float(os.getenv("AUDIO_SENT_GAP") or "0.35")   # 문장 사이 쉼(초)
+PARA_GAP = float(os.getenv("AUDIO_PARA_GAP") or "0.9")    # 문단(사안) 사이 쉼(초)
+
+
+def _google_by_sentence(paras: list, voice: str, path: str) -> str:
+    """문장마다 따로 읽혀서 사이에 정해진 길이의 무음을 넣음.
+    한 번에 긴 글을 보내면 음성 엔진이 마침표·문단을 무시하고 이어 읽거나 엉뚱한 곳에서 쉬는 일이 있어,
+    마침표와 문단 경계의 쉼을 프로그램이 직접 보장한다(쉼표 안쪽 억양은 엔진에 맡김)"""
+    import base64
+    import io
+    import subprocess
+    import wave
+    sr, pcm = 24000, bytearray()
+    for pi, p in enumerate(paras):
+        sents = [x.strip() for x in re.split(r"(?<=[.?!])\s+", p) if x.strip()]
+        for si, sent in enumerate(sents):
+            r = requests.post(
+                "https://texttospeech.googleapis.com/v1/text:synthesize",
+                params={"key": GOOGLE_TTS_KEY},
+                json={"input": {"text": sent}, "voice": {"languageCode": "ko-KR", "name": voice},
+                      "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": sr,
+                                      "speakingRate": AUDIO_RATE}},
+                timeout=60,
+            )
+            if not r.ok:
+                raise RuntimeError(f"구글 음성 오류 {r.status_code}: {r.text[:200]}")
+            with wave.open(io.BytesIO(base64.b64decode(r.json()["audioContent"]))) as w:
+                pcm += w.readframes(w.getnframes())
+            last = si == len(sents) - 1
+            if not (last and pi == len(paras) - 1):
+                pcm += b"\x00\x00" * int(sr * (PARA_GAP if last else SENT_GAP))
+    wav = path[:-4] + ".wav"
+    with wave.open(wav, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(bytes(pcm))
+    ff = _ffmpeg()
+    if ff:
+        subprocess.run([ff, "-y", "-v", "error", "-i", wav, "-b:a", "96k", path], check=True, capture_output=True, timeout=120)
+    else:
+        os.replace(wav, path)
+    return f"구글 {voice} 문장별 쉼{SENT_GAP}/{PARA_GAP}초 속도{AUDIO_RATE}"
+
+
 def tts_mp3(text: str, path: str) -> str:
     """원고 → mp3. GOOGLE_TTS_KEY가 있으면 구글, 없으면 edge-tts(무료). 쓴 엔진 이름을 돌려줌"""
     if GOOGLE_TTS_KEY:
@@ -976,6 +1022,8 @@ def tts_mp3(text: str, path: str) -> str:
             chunks.append(cur)
         # 쉼 표시([pause long])는 Chirp 3 HD가 그 자리에 '음·어' 같은 군말을 넣는 경우가 있어 기본은 끔(AUDIO_PAUSE=on으로 켜기)
         use_markup = "chirp3" in voice.lower() and (os.getenv("AUDIO_PAUSE") or "off").strip().lower() == "on"
+        if (os.getenv("AUDIO_SPLIT") or "on").strip().lower() != "off" and not use_markup:
+            return _google_by_sentence(paras, voice, path)
         with open(path, "wb") as f:
             for c in chunks:
                 for mode in (["markup", "text"] if use_markup else ["text"]):
