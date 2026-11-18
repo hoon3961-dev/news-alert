@@ -41,7 +41,8 @@ NAVER_KEY = (os.getenv("NAVER_APIHUB_KEY") or "").strip()
 NAVER_ON = ((os.getenv("NAVER_SEARCH") or "on").strip().lower() != "off") and bool(NAVER_ID and NAVER_KEY)
 NAVER_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 NAVER_DISPLAY = int(os.getenv("NAVER_DISPLAY") or "100")   # 한 번에 받는 건수(최대 100)
-_NAVER_FAILS = [0]                                 # 네이버 호출이 3번 실패하면 이번 실행에서는 더 부르지 않음
+_NAVER_FAILS = [0]
+BGM_USED = [""]                                     # 이번 브리핑에 쓴 배경음악(기록용)                                 # 네이버 호출이 3번 실패하면 이번 실행에서는 더 부르지 않음
 DROPPED: list = []                                 # 이번 실행에서 거른 기사 [시각, 이유, 언론사, 제목] → state.json에 보관
 def _naver_queries() -> list:
     raw = os.getenv("NAVER_QUERIES")
@@ -1198,7 +1199,8 @@ def add_bgm(voice: str, now: dt.datetime = None) -> str:
                                 "-filter_complex", fc, "-map", "[o]", "-t", f"{total:.2f}", "-ac", "1", "-b:a", "96k", out],
                                check=True, capture_output=True, timeout=180)
                 if os.path.getsize(out) > 1000:
-                    print(f"배경음악: {os.path.basename(music) if not AUDIO_BGM_URL else '지정 음원'} 사용")
+                    BGM_USED[0] = "지정 음원" if AUDIO_BGM_URL else os.path.basename(music)
+                    print(f"배경음악: {BGM_USED[0]} 사용")
                     return out
             except Exception as e:
                 print(f"[지정 배경음악 실패 → 기본 음악 사용] {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
@@ -1218,6 +1220,7 @@ def add_bgm(voice: str, now: dt.datetime = None) -> str:
                         "-filter_complex", fc, "-map", "[o]", "-t", f"{total:.2f}", "-ac", "1", "-b:a", "96k", out],
                        check=True, capture_output=True, timeout=180)
         if os.path.getsize(out) > 1000:
+            BGM_USED[0] = f"기본 음악 {AUDIO_BGM_STYLE}번"
             return out
     except Exception as e:
         print(f"[배경음악 생략] {type(e).__name__}: {str(e)[:150]}", file=sys.stderr)
@@ -1300,11 +1303,11 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         path = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
         try:
             engine = tts_mp3(script, path)
-            state["audio_scripts"][-1].append(engine)
             mixed = add_bgm(path, now)
             if mixed != path:
-                engine += " + 배경음악"
+                engine += " + 배경음악(" + BGM_USED[0] + ")"
                 path = mixed
+            state["audio_scripts"][-1].append(engine)
             send_audio(path, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
             print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
         except Exception as e:                     # 음성 실패 시 원고를 글로 대신 보냄
