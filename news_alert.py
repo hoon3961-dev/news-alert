@@ -702,21 +702,32 @@ def audio_due(state: dict, now: dt.datetime):
 
 
 def ask_claude(prompt: str, max_tokens: int = 8000, timeout: int = 150) -> str:
-    """음성 브리핑용 AI 호출. 답의 글 부분만 돌려줌(생각 블록 등은 건너뜀). 실패하면 오류 기록 후 ''"""
-    for attempt in range(2):
+    """음성 브리핑용 AI 호출. 답의 글 부분만 돌려줌(생각 블록 등은 건너뜀). 실패하면 오류 기록 후 ''
+    답이 길이 제한에 걸려 잘리면 제한을 늘려 다시 요청함"""
+    no_think = True                                # '생각' 단계를 끄고(답이 잘리는 원인) 안 되면 기본으로
+    for attempt in range(3):
         try:
+            body = {"model": CLAUDE_MODEL, "max_tokens": max_tokens,
+                    "messages": [{"role": "user", "content": prompt}]}
+            if no_think:
+                body["thinking"] = {"type": "disabled"}
             r = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                          "content-type": "application/json"},
-                json={"model": CLAUDE_MODEL, "max_tokens": max_tokens,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=timeout,
+                json=body, timeout=timeout,
             )
             if not r.ok:
+                if no_think and r.status_code == 400 and "thinking" in r.text:
+                    no_think = False
+                    continue
                 raise RuntimeError(f"{r.status_code} {r.text[:300]}")
             res = r.json()
             text = "".join(c.get("text", "") for c in res.get("content", []) if c.get("type", "text") == "text").strip()
+            if res.get("stop_reason") == "max_tokens":
+                AUDIO_ERR.append(f"답변 잘림(max_tokens={max_tokens}, 글 {len(text)}자, 블록={[c.get('type') for c in res.get('content', [])]})")
+                max_tokens = min(max_tokens * 2, 32000)
+                continue
             if not text:
                 raise RuntimeError(f"빈 답변 stop={res.get('stop_reason')} 블록={[c.get('type') for c in res.get('content', [])]}")
             return text
@@ -818,6 +829,10 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
         )
         text = ask_claude(prompt)
         if len(text) > 50:
+            if "브리핑이었습니다" not in text[-60:]:      # 끝이 잘렸으면 마지막 완성 문장까지만 + 맺음말
+                AUDIO_ERR.append(f"대본 끝 누락 보정(원래 {len(text)}자)")
+                cut = max(text.rfind("니다."), text.rfind("니다\n"))
+                text = (text[:cut + 3] if cut > 0 else text) + "\n\n" + outro
             return text
     parts = [intro]
     for n, g in enumerate(groups, 1):
