@@ -939,7 +939,7 @@ def speakable(text: str) -> str:
     text = re.sub(r"[\[(（]\s*(단독|속보|종합|사설|칼럼|기고|포토|영상)\s*[\])）]", " ", text)   # 머리표는 읽지 않음
     text = re.sub(r"[\"“”‘’'「」『』]", "", text)                 # 따옴표는 붙여서('이드러그'도 → 이드러그도)
     text = re.sub(r"[\[\]【】〈〉<>]", " ", text)
-    text = text.replace("·", ", ").replace("→", ", ").replace("…", ", ")
+    text = text.replace("·", " ").replace("→", ", ").replace("…", ", ")
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
@@ -1304,7 +1304,7 @@ def to_voice(mp3: str) -> str:
         return ""
 
 
-def send_audio(path: str, caption: str, title: str) -> None:
+def send_audio(path: str, caption: str, title: str) -> int:
     ogg = to_voice(path)
     if ogg:                                        # 음성 메시지로 발송(재생이 끝나면 멈춤)
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendVoice"
@@ -1319,11 +1319,42 @@ def send_audio(path: str, caption: str, title: str) -> None:
         with open(fpath, "rb") as f:
             r = requests.post(url, data=data, files={field: (os.path.basename(fpath), f, mime)}, timeout=120)
         if r.ok:
-            return
+            try:
+                return int(r.json()["result"]["message_id"])
+            except Exception:
+                return 0
         print(f"[텔레그램 음성 오류] {r.status_code}: {r.text[:200]}", file=sys.stderr)
         data.pop("parse_mode", None)               # 서식 문제일 수 있어 서식 없이 다시
         data["caption"] = html.unescape(re.sub(r"</?b>", "", caption))
     r.raise_for_status()
+
+
+def send_script(script: str, reply_to: int, head: str) -> None:
+    """음성에 실제로 넣은 원고를 문단 번호와 함께 글로 보냄(음성 메시지에 답장 형태, 접힌 상태로)
+    → 들으면서 '3번 문단 ○○ 발음 이상'처럼 바로 짚을 수 있게"""
+    paras = [p.strip() for p in re.split(r"\n\s*\n|\n", script) if p.strip()]
+    body = "\n\n".join(f"{n}) {html.escape(p)}" for n, p in enumerate(paras, 1))
+    parts, cur = [], ""
+    for blk in body.split("\n\n"):                # 텔레그램 4,096자 제한 대비 문단 단위로 나눔
+        if cur and len(cur) + len(blk) > 3500:
+            parts.append(cur)
+            cur = blk
+        else:
+            cur = (cur + "\n\n" + blk) if cur else blk
+    if cur:
+        parts.append(cur)
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    for i, part in enumerate(parts):
+        text = (head if i == 0 else "") + f"<blockquote expandable>{part}</blockquote>"
+        payload = {"chat_id": TG_CHAT.strip(), "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+        if reply_to:
+            payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        r = requests.post(url, json=payload, timeout=30)
+        if not r.ok:                               # 접기 기능이 안 되면 그냥 글로
+            print(f"[원고 발송 오류] {r.status_code}: {r.text[:150]}", file=sys.stderr)
+            payload.pop("parse_mode", None)
+            payload["text"] = html.unescape(re.sub(r"</?(b|blockquote[^>]*)>", "", text))
+            requests.post(url, json=payload, timeout=30)
 
 
 def audio_briefing(state: dict, now: dt.datetime) -> None:
@@ -1367,7 +1398,12 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
                 engine += " + 배경음악(" + BGM_USED[0] + ")"
                 path = mixed
             state["audio_scripts"][-1].append(engine)
-            send_audio(path, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
+            mid = send_audio(path, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
+            if (os.getenv("AUDIO_SCRIPT_MSG") or "on").strip().lower() != "off":
+                try:
+                    send_script(script, mid, "📝 <b>음성 원고</b> (눌러서 펼치기 · 문단 번호로 지적해 주세요)\n")
+                except Exception as e:
+                    print(f"[원고 발송 오류] {type(e).__name__}: {e}", file=sys.stderr)
             print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
         except Exception as e:                     # 음성 실패 시 원고를 글로 대신 보냄
             print(f"[음성 생성 실패] {type(e).__name__}: {e}", file=sys.stderr)
