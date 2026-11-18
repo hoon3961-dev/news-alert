@@ -758,7 +758,7 @@ def audio_cluster(groups: list) -> list:
                   "모든 번호가 정확히 한 번씩 들어가야 한다. JSON 배열만 출력: [[0,3],[1],[2,4]]\n\n" + lines)
         try:
             text = ask_claude(prompt, 4000)
-            data = json.loads(text[text.index("["): text.rindex("]") + 1])
+            data, _ = json.JSONDecoder().raw_decode(text[text.index("["):])   # 뒤에 설명이 붙어도 첫 배열만
             out, used = [], set()
             for c in data:
                 c = [int(i) for i in (c if isinstance(c, list) else [c]) if 0 <= int(i) < n and int(i) not in used]
