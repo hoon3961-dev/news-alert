@@ -57,6 +57,12 @@ jobs:
           AUDIO_BGM_URL: ${{ vars.AUDIO_BGM_URL }}
           AUDIO_RATE: ${{ vars.AUDIO_RATE }}
           AUDIO_DICT: ${{ vars.AUDIO_DICT }}
+          AUDIO_PAUSE: ${{ vars.AUDIO_PAUSE }}
+          AUDIO_SCRIPT_MSG: ${{ vars.AUDIO_SCRIPT_MSG }}
+          AUDIO_SPLIT: ${{ vars.AUDIO_SPLIT }}
+          AUDIO_SENT_GAP: ${{ vars.AUDIO_SENT_GAP }}
+          AUDIO_PARA_GAP: ${{ vars.AUDIO_PARA_GAP }}
+          AUDIO_COMMA_GAP: ${{ vars.AUDIO_COMMA_GAP }}
           AUDIO_TEST: ${{ inputs.audio_test }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
         run: python news_alert.py

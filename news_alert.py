@@ -1448,6 +1448,7 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         groups = group_articles(sorted(recs, key=lambda x: x["found"]))
         # 실행마다 따로 들어온 같은 사안(예: 9시·11시·15시에 각각 들어온 같은 사건 기사)을 하나로 합침
         merged = [[a for i in c for a in groups[i]] for c in audio_cluster(groups)]
+        merged.sort(key=lambda g: -len(g))   # AI가 준 순서와 무관하게 기사가 많은 사안부터(파이썬 정렬은 안정적이라 동수면 AI 순서 유지)
         use, more = merged[:AUDIO_MAX], max(len(merged) - AUDIO_MAX, 0)
         script = speakable(audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
                                         ("아침" if label == "시험" else label), since, now, more))
