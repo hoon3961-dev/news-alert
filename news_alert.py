@@ -9,6 +9,8 @@ import html
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -834,6 +836,14 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             + "\n\n".join(items)
         )
         text = ask_claude(prompt)
+        src = "\n".join(f"{x['title']} {x.get('summary') or ''}" for g in groups for x in g)
+        bad = sorted({o for o in _ORG_RE.findall(text) if o not in src})
+        if len(text) > 50 and bad:                 # 요약에 없는 기관명(예: 서울중수청 → 서울중앙지검)이면 한 번 고쳐 쓰게
+            AUDIO_ERR.append(f"대본 기관명 불일치: {', '.join(bad)}")
+            again = ask_claude(prompt + "\n\n[고쳐 쓰기] 앞서 쓴 원고에 요약에 없는 기관명이 있었다: "
+                               + ", ".join(bad) + ". 기관명은 요약에 적힌 그대로 써라.")
+            if len(again) > 50 and len({o for o in _ORG_RE.findall(again) if o not in src}) < len(bad):
+                text = again
         if len(text) > 50:
             if "브리핑이었습니다" not in text[-60:]:      # 끝이 잘렸으면 마지막 완성 문장까지만 + 맺음말
                 AUDIO_ERR.append(f"대본 끝 누락 보정(원래 {len(text)}자)")
@@ -1455,6 +1465,276 @@ def send_script(script: str, reply_to: int, head: str) -> None:
             requests.post(url, json=payload, timeout=30)
 
 
+# ── 카드뉴스(브리핑마다 텔레그램 앨범, 부서 공유용·보고서풍) ─────────────────
+# CARD=off 로 끄기. CARD_MAX: 사안 카드 최대 장수(표지·마무리 포함 10장 이내라 8 이하)
+CARD_ON = (os.getenv("CARD") or "on").strip().lower() != "off"
+CARD_MAX = max(1, min(int(os.getenv("CARD_MAX") or "8"), 8))
+CARD_TAGS = {"조직·인력": "#2E5C8A", "인사": "#6B4F8A", "수사": "#8A3B3B", "국회·예산": "#3D6B4F",
+             "제도·협의": "#7A6230", "기타": "#5B6B7F"}
+CARD_DISCLAIMER = "언론보도 요약 · 사실관계 확인 전 · 내부 참고용"
+_FONT_URLS = ["https://raw.githubusercontent.com/orioncactus/pretendard/v1.3.9/packages/pretendard/dist/web/variable/woff2/PretendardVariable.woff2",
+              "https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/woff2/PretendardVariable.woff2"]
+_ORG_RE = re.compile(r"[가-힣]{1,8}(?:중수청|공소청|지검|지청|경찰청|지법|고법)")
+
+
+def _num_norm(t: str) -> str:
+    return re.sub(r"(?<=\d),(?=\d{3})", "", t)
+
+
+def unsupported(text: str, src: str, now: dt.datetime = None) -> list:
+    """글에 나온 기관명·숫자 중 원래 제목·요약에 없는 것(AI가 지어냈거나 잘못 바꾼 것)"""
+    src_n = _num_norm(src)
+    bad = [o for o in set(_ORG_RE.findall(text)) if o not in src]
+    nums = set(re.findall(r"\d+(?:\.\d+)?", src_n))
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(월|년)?", _num_norm(text)):
+        n, unit = m.group(1), m.group(2)
+        if n in nums or (unit == "월" and n.isdigit() and 1 <= int(n) <= 12) or (unit == "년" and n.startswith("20")):
+            continue
+        if now and n in (str(now.year), str(now.month), str(now.day)):
+            continue
+        bad.append(n)
+    return sorted(set(bad))
+
+
+def _src_text(g: list) -> str:
+    return "\n".join(f"{x['title']} {x.get('summary') or ''}" for x in g)
+
+
+def _cut(t: str, lim: int) -> str:
+    return t if len(t) <= lim else (t[:lim].rsplit(" ", 1)[0] if " " in t[:lim] else t[:lim]) + "…"
+
+
+def _card_fallback(g: list) -> dict:
+    """AI 문구를 못 쓸 때: 기사 제목과 요약 문장을 그대로(지어낸 말 없이)"""
+    a = g[0]
+    head = re.sub(r"\s+", " ", re.sub(r"\[[^\]]*\]|【[^】]*】", " ", a["title"])).strip()
+    sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+", tidy_summary(a.get("summary") or "")) if len(x.strip()) > 4]
+    pts = [_cut(x, 70) for x in sents[:3]] or ["기사 원문을 확인해 주세요."]
+    return {"tag": "기타", "headline": _cut(head, 46), "points": pts}
+
+
+def card_copy(groups: list, now: dt.datetime) -> list:
+    """사안마다 카드 문구 {tag, headline, points}. AI가 쓰고, 원문에 없는 기관명·숫자가 섞이면 한 번 고쳐 쓰게 하고
+    그래도 남으면 그 사안만 요약 원문으로 대체"""
+    out = [None] * len(groups)
+    if ANTHROPIC_KEY:
+        items = []
+        for n, g in enumerate(groups):
+            sums = []
+            for x in g[:4]:
+                if x["summary"] and x["summary"] not in sums:
+                    sums.append(x["summary"])
+            items.append(f"[{n}] 제목: {g[0]['title']}\n요약:\n" + "\n".join(sums or ["(요약 없음)"]))
+        base = (
+            "아래 사안들로 부서 내부 공유용 카드뉴스 문구를 만든다. 사안마다 카드 한 장이다.\n"
+            "[형식] JSON 배열만 출력: [{\"i\":0,\"tag\":\"수사\",\"headline\":\"...\",\"points\":[\"...\",\"...\",\"...\"]}]\n"
+            f"- tag는 다음 중 하나: {', '.join(CARD_TAGS)}\n"
+            "- headline: 무슨 일인지 한 줄, 공백 포함 28자 이내, 명사형으로 끝냄(예: '서울중수청, ○○ 사건 공수처 이첩').\n"
+            "- points: 핵심 사실 3개, 각각 공백 포함 40자 이내, 개조식(~함/~임 대신 명사형·'~하기로' 등으로 짧게).\n"
+            "[금지]\n"
+            "- 요약에 없는 사실·숫자·기관명·직함을 쓰지 않는다. 기관명은 요약에 적힌 그대로 쓴다(예: '서울중수청'을 '서울중앙지검'으로 바꾸지 않음).\n"
+            "- 숫자는 요약에 있는 값 그대로 쓴다(단위 바꾸기·반올림 금지).\n"
+            "- 평가·전망·의견 표현('논란 확산', '파장', '비상', '난항 불가피' 등 요약에 없는 해석)을 쓰지 않는다.\n"
+            "- 언론사 이름은 쓰지 않는다(출처는 따로 붙임).\n\n" + "\n\n".join(items))
+        prompt = base
+        for attempt in range(2):
+            text = ask_claude(prompt, 4000)
+            try:
+                data, _ = json.JSONDecoder().raw_decode(text[text.index("["):])
+            except Exception as e:
+                AUDIO_ERR.append(f"카드 문구: {type(e).__name__}: {str(e)[:150]}")
+                break
+            notes = []
+            for d in data:
+                try:
+                    i = int(d["i"])
+                    pts = [str(p).strip() for p in d.get("points", []) if str(p).strip()][:3]
+                    c = {"tag": d.get("tag") if d.get("tag") in CARD_TAGS else "기타",
+                         "headline": str(d["headline"]).strip(), "points": pts}
+                except Exception:
+                    continue
+                if not (0 <= i < len(groups)) or not c["headline"] or not pts:
+                    continue
+                bad = unsupported(c["headline"] + " " + " ".join(pts), _src_text(groups[i]), now)
+                if bad:
+                    notes.append(f"[{i}] 요약에 없는 표현: {', '.join(bad)}")
+                    AUDIO_ERR.append(f"카드 {i} 원문 불일치: {', '.join(bad)}")
+                else:
+                    out[i] = c
+            if not notes:
+                break
+            prompt = base + "\n\n[고쳐 쓰기] 앞서 쓴 문구에 요약에 없는 기관명·숫자가 있었다. 요약 그대로 다시 써라.\n" + "\n".join(notes)
+    return [c or _card_fallback(g) for c, g in zip(out, groups)]
+
+
+def _card_font_css() -> str:
+    path = os.path.join(os.getenv("RUNNER_TEMP") or "/tmp", "PretendardVariable.woff2")
+    if not os.path.exists(path):
+        for u in _FONT_URLS:
+            try:
+                r = requests.get(u, timeout=30)
+                if r.ok and len(r.content) > 100000:
+                    open(path, "wb").write(r.content)
+                    break
+            except Exception:
+                pass
+    if os.path.exists(path):
+        import base64
+        b64 = base64.b64encode(open(path, "rb").read()).decode()
+        return ("@font-face{font-family:'Pretendard';font-weight:45 920;"
+                f"src:url(data:font/woff2;base64,{b64}) format('woff2')}}")
+    if not subprocess.run(["fc-list", ":lang=ko"], capture_output=True, text=True).stdout.strip():
+        raise RuntimeError("한글 글꼴 없음(글꼴 내려받기 실패)")
+    return ""
+
+
+_CARD_CSS = """
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1080px;height:1350px}
+body{background:#fff;color:#1B2A3D;font-family:'Pretendard','Noto Sans CJK KR','Noto Sans KR',sans-serif;
+ word-break:keep-all;overflow-wrap:break-word;position:relative;overflow:hidden;letter-spacing:-0.5px}
+.band{background:#1F3A5F;color:#fff;padding:56px 80px 64px}
+.brand{font-size:30px;font-weight:700;display:flex;justify-content:space-between}
+.foot{position:absolute;left:80px;right:80px;bottom:56px;border-top:2px solid #D9E0E8;padding-top:24px;
+ font-size:24px;color:#8592A3;display:flex;justify-content:space-between;gap:24px}
+.tag{display:inline-block;font-size:28px;font-weight:700;padding:8px 22px;border-radius:999px;color:#fff}
+.row{display:flex;gap:28px;align-items:flex-start;padding:26px 0;border-bottom:2px solid #D9E0E8}
+.pt{display:flex;gap:24px;padding:30px 0;border-bottom:2px solid #D9E0E8}
+.dot{width:14px;height:14px;border-radius:50%;background:#2E5C8A;margin-top:22px;flex:none}
+"""
+
+
+def _esc(t) -> str:
+    return html.escape(str(t))
+
+
+def _tag(tag: str) -> str:
+    return f"<span class='tag' style='background:{CARD_TAGS.get(tag, '#5B6B7F')}'>{_esc(tag)}</span>"
+
+
+def _fit(text: str, sizes: list) -> int:
+    """글이 길면 글자를 한 단계씩 줄임: sizes=[(최대 글자수, 크기), ...]"""
+    for lim, size in sizes:
+        if len(text) <= lim:
+            return size
+    return sizes[-1][1]
+
+
+def card_pages(cards: list, sources: list, when: str, when_short: str, label: str, n_art: int, more: int) -> list:
+    total = len(cards) + 2
+    wrap = lambda body: f"<!DOCTYPE html><html><head><meta charset='utf-8'><style>{_CARD_CSS}</style></head><body>{body}</body></html>"
+    hs = 40 if len(cards) <= 4 else (34 if len(cards) <= 6 else 30)
+    rows = "".join(
+        f"<div class='row' style='padding:{26 if len(cards) <= 4 else 16}px 0'>"
+        f"<div style='font-size:{hs + 4}px;font-weight:900;color:#2E5C8A;min-width:70px'>{i:02d}</div>"
+        f"<div><div style='margin-bottom:10px'>{_tag(c['tag'])}</div>"
+        f"<div style='font-size:{hs}px;font-weight:700;line-height:1.35'>{_esc(c['headline'])}</div></div></div>"
+        for i, c in enumerate(cards, 1))
+    pages = [wrap(
+        f"<div class='band'><div class='brand'><span style='opacity:.85'>언론보도 모니터링</span><span>1 / {total}</span></div>"
+        f"<div style='font-size:34px;font-weight:500;opacity:.8;margin-top:56px'>{_esc(when)}</div>"
+        f"<div style='font-size:84px;font-weight:900;line-height:1.15;margin-top:18px'>중수청<br>언론보도 브리핑</div>"
+        f"<div style='font-size:32px;margin-top:28px;opacity:.85'>{_esc(label)} · 기사 {n_art}건 · 사안 {len(cards) + more}개</div></div>"
+        f"<div style='padding:12px 80px 0'>{rows}</div>"
+        f"<div class='foot'><span>{CARD_DISCLAIMER}</span></div>")]
+    for i, (c, src) in enumerate(zip(cards, sources), 1):
+        ps = _fit(" ".join(c["points"]), [(110, 40), (140, 36), (999, 32)])
+        pts = "".join(f"<div class='pt'><div class='dot'></div><div style='font-size:{ps}px;line-height:1.5;font-weight:500'>{_esc(p)}</div></div>"
+                      for p in c["points"])
+        pages.append(wrap(
+            f"<div style='padding:56px 80px 0'><div class='brand' style='color:#5B6B7F'>"
+            f"<span>중수청 언론보도 · {_esc(when_short)}</span><span>{i + 1} / {total}</span></div></div>"
+            f"<div style='padding:110px 80px 0'><div style='display:flex;align-items:center;gap:26px'>"
+            f"<span style='font-size:72px;font-weight:900;color:#2E5C8A;line-height:1'>{i:02d}</span>{_tag(c['tag'])}</div>"
+            f"<div style='font-size:{_fit(c['headline'], [(26, 62), (36, 54), (999, 46)])}px;font-weight:900;line-height:1.3;margin-top:30px'>{_esc(c['headline'])}</div>"
+            f"<div style='height:6px;width:120px;background:#2E5C8A;margin:44px 0 16px'></div>{pts}</div>"
+            f"<div class='foot'><span>출처: {_esc(src)}</span><span>{CARD_DISCLAIMER}</span></div>"))
+    extra = f"이 밖에 중수청 관련 사안 {more}개는<br>텔레그램 알림에서 확인하세요.<br><br>" if more else ""
+    pages.append(wrap(
+        f"<div class='band' style='height:1350px;display:flex;flex-direction:column;justify-content:center'>"
+        f"<div class='brand' style='position:absolute;top:56px;left:80px;right:80px'><span style='opacity:.85'>언론보도 모니터링</span>"
+        f"<span>{total} / {total}</span></div>"
+        f"<div style='font-size:60px;font-weight:900;line-height:1.35'>기사 원문은<br>텔레그램 메시지의<br>"
+        f"<span style='color:#9CC3EA'>링크</span>에서 확인하세요</div>"
+        f"<div style='font-size:32px;line-height:1.7;margin-top:56px;opacity:.85'>{extra}"
+        f"이 카드는 언론 보도 내용을 요약한 것으로<br>사실관계가 확인되지 않은 내용이 포함될 수 있습니다.<br>"
+        f"외부 배포를 금합니다.</div></div>"))
+    return pages
+
+
+def _chrome() -> str:
+    for c in [os.getenv("CHROME_PATH") or "", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]:
+        p = shutil.which(c) if c else None
+        if p:
+            return p
+    return ""
+
+
+def render_cards(pages: list, folder: str) -> list:
+    chrome = _chrome()
+    if not chrome:
+        raise RuntimeError("크롬 없음")
+    font = _card_font_css()
+    os.makedirs(folder, exist_ok=True)
+    paths = []
+    for n, h in enumerate(pages, 1):
+        hp, png = os.path.join(folder, f"card_{n}.html"), os.path.join(folder, f"card_{n}.png")
+        open(hp, "w", encoding="utf-8").write(h.replace("<style>", "<style>" + font, 1))
+        subprocess.run([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+                        "--force-device-scale-factor=1", "--window-size=1080,1350", "--virtual-time-budget=3000",
+                        f"--screenshot={png}", "file://" + os.path.abspath(hp)],
+                       capture_output=True, timeout=90)
+        if not os.path.exists(png) or os.path.getsize(png) < 5000:
+            raise RuntimeError(f"카드 {n} 이미지 생성 실패")
+        paths.append(png)
+    return paths
+
+
+def send_cards(paths: list, caption: str, reply_to: int = 0) -> None:
+    media = [{"type": "photo", "media": f"attach://c{i}"} for i in range(len(paths))]
+    media[0].update({"caption": caption, "parse_mode": "HTML"})
+    data = {"chat_id": TG_CHAT.strip()}
+    if reply_to:
+        data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMediaGroup"
+    for _ in range(2):
+        fs = [open(p, "rb") for p in paths]
+        try:
+            r = requests.post(url, data={**data, "media": json.dumps(media, ensure_ascii=False)},
+                              files={f"c{i}": (os.path.basename(p), f, "image/png") for i, (p, f) in enumerate(zip(paths, fs))},
+                              timeout=180)
+        finally:
+            for f in fs:
+                f.close()
+        if r.ok:
+            return
+        print(f"[카드 발송 오류] {r.status_code}: {r.text[:200]}", file=sys.stderr)
+        media[0].pop("parse_mode", None)           # 서식 문제일 수 있어 서식 없이 다시
+        media[0]["caption"] = html.unescape(re.sub(r"<[^>]+>", "", caption))
+    r.raise_for_status()
+
+
+def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int, reply_to: int) -> None:
+    show = use[:CARD_MAX]
+    more += len(use) - len(show)
+    cards = card_copy(show, now)
+    sources = [g[0]["press"] + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for g in show]
+    wd = "월화수목금토일"[now.weekday()]
+    pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
+                       f"{label} 브리핑", n_art, more)
+    paths = render_cards(pages, os.path.join(os.getenv("RUNNER_TEMP") or ".", f"cards_{now:%m%d_%H%M}"))
+    lines = []
+    for i, (c, g) in enumerate(zip(cards, show), 1):
+        links = " · ".join(f"<a href=\"{html.escape(x['url'], quote=True)}\">{html.escape(x['press'])}</a>" for x in g[:3])
+        lines.append(f"{i}. {html.escape(c['headline'])} — {links}")
+    caption = f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용)\n" + "\n".join(lines)
+    while len(caption) > 1000 and lines:          # 텔레그램 설명란 1,024자 제한: 뒤 사안부터 링크 1개로 줄임
+        lines.pop()
+        caption = f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용)\n" + "\n".join(lines) + "\n…"
+    send_cards(paths, caption, reply_to)
+    print(f"카드뉴스({label}) 발송: {len(paths)}장")
+
+
 def audio_briefing(state: dict, now: dt.datetime) -> None:
     label = audio_due(state, now)
     if not label:
@@ -1506,6 +1786,12 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
                 except Exception as e:
                     print(f"[원고 발송 오류] {type(e).__name__}: {e}", file=sys.stderr)
             print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
+            if CARD_ON:
+                try:
+                    card_briefing(use, label, now, len(recs), more, mid)
+                except Exception as e:
+                    AUDIO_ERR.append(f"카드뉴스: {type(e).__name__}: {str(e)[:200]}")
+                    print(f"[카드뉴스 실패] {type(e).__name__}: {e}", file=sys.stderr)
         except Exception as e:                     # 음성 실패 시 원고를 글로 대신 보냄
             print(f"[음성 생성 실패] {type(e).__name__}: {e}", file=sys.stderr)
             msg = head + f"{len(recs)}건 (음성 생성 실패, 원고로 대신 보냅니다)\n\n" + html.escape(script)

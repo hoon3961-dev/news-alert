@@ -65,6 +65,8 @@ jobs:
           AUDIO_PARA_GAP: ${{ vars.AUDIO_PARA_GAP }}
           AUDIO_COMMA_GAP: ${{ vars.AUDIO_COMMA_GAP }}
           AUDIO_TEST: ${{ inputs.audio_test }}
+          CARD: ${{ vars.CARD }}
+          CARD_MAX: ${{ vars.CARD_MAX }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
         run: python news_alert.py
 
