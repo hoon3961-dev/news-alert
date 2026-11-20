@@ -42,6 +42,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           QUIET_HOURS: ${{ vars.QUIET_HOURS }}
+          DIGEST_MINUTES: ${{ vars.DIGEST_MINUTES }}
           EXCLUDE_PRESS: ${{ vars.EXCLUDE_PRESS }}
           EXCLUDE_WORDS: ${{ vars.EXCLUDE_WORDS }}
           QUERIES: ${{ vars.QUERIES }}
