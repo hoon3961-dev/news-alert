@@ -899,21 +899,12 @@ def polite(text: str) -> str:
 
 
 _PRON = [  # (정규식, 바꿀 말) — 귀로 들을 때 어색한 표기를 소리 나는 대로
-    (r"5\s?[·.]\s?18", "오일팔"), (r"4\s?[·.]\s?19", "사일구"), (r"6\s?[·.]\s?25", "육이오"),
-    (r"12\s?[·.]\s?12", "십이 십이"), (r"12\s?[·.]\s?3(?!\d)", "십이 삼"), (r"3\s?[·.]\s?1절", "삼일절"),
-    (r"(\d+)\s?·\s?(\d+)", r"\1 \2"),                                # 그 밖의 숫자·숫자
     (r"([A-Za-z]{2,})\s?\(([가-힣\s]{1,20})\)", r"\2"),           # NDFAS(엔디파스) → 엔디파스
     (r"([가-힣]+)\s?\(([A-Za-z0-9\s\-]{1,20})\)", r"\1"),          # 엔디파스(NDFAS) → 엔디파스
     (r"\(([\u4e00-\u9fff]{1,4})\)", ""),                           # 고(故) → 고
     (r"李\s*대통령", "이재명 대통령"), (r"李", "이재명 대통령"), (r"尹\s*전\s*대통령", "윤석열 전 대통령"),
     (r"尹", "윤석열 전 대통령"), (r"故\s*", "고 "), (r"與", "여당"), (r"野", "야당"), (r"檢", "검찰"),
     (r"警", "경찰"), (r"靑", "청와대"), (r"軍", "군"), (r"美", "미국"), (r"中(?=[\s,])", "중국"), (r"日(?=[\s,])", "일본"),
-    (r"\b([A-Z])\s?씨", lambda m: {"A": "에이", "B": "비", "C": "씨", "D": "디", "E": "이", "F": "에프", "G": "지", "H": "에이치", "K": "케이", "L": "엘", "M": "엠", "P": "피", "S": "에스", "Y": "와이"}.get(m.group(1), m.group(1)) + " 씨"),
-    (r"(수사|형사|조사|감사|기획)과(?![가-힣]*과)", r"\1꽈"),             # 수사과 → 수사꽈 (된소리)
-    (r"(수사|형사|조사|감사|기획)과(?=장)", r"\1꽈"),                    # 수사과장 → 수사꽈장
-    (r"(도매|소매)가(?!격)", r"\1까"),                                  # 도매가·소매가(가격) → 도매까·소매까 (조사 '가'로 읽히지 않게)
-    (r"NDFAS", "엔디파스"), (r"KOLAS", "콜라스"), (r"\bAI\b", "에이아이"), (r"\bCCTV\b", "씨씨티비"),
-    (r"\bTF\b", "티에프"), (r"\bSNS\b", "에스엔에스"), (r"\bMOU\b", "업무협약"),
     (r"(\d{1,2})\.\s?(\d{1,2})\.(?!\d)", r"\1월 \2일"),          # 11.17. → 11월 17일
     (r"(\d{1,2}):(\d{2})", r"\1시 \2분"),                         # 9:20 → 9시 20분
     (r"(\d)\s?%", r"\1퍼센트"), (r"(\d)\s?~\s?(\d)", r"\1에서 \2"),
@@ -921,13 +912,49 @@ _PRON = [  # (정규식, 바꿀 말) — 귀로 들을 때 어색한 표기를 �
 ]
 
 
-def pronounce(text: str) -> str:
-    pairs = [x.split("=", 1) for x in re.split(r"[,\n]", AUDIO_DICT) if "=" in x]
-    for a, b in pairs:                             # 사용자 사전 먼저
-        if a.strip():
-            text = text.replace(a.strip(), b.strip())
+_SOUND = [  # 귀로 들을 때만 쓰는 소리 표기(원고에는 원래 표기 그대로). 예: 영장→영짱
+    (r"5\s?[·.]\s?18", "오일팔"), (r"4\s?[·.]\s?19", "사일구"), (r"6\s?[·.]\s?25", "육이오"),
+    (r"12\s?[·.]\s?12", "십이 십이"), (r"12\s?[·.]\s?3(?!\d)", "십이 삼"), (r"3\s?[·.]\s?1절", "삼일절"),
+    (r"(\d+)\s?·\s?(\d+)", r"\1 \2"),                                # 그 밖의 숫자·숫자
+    (r"\b([A-Z])\s?씨", lambda m: {"A": "에이", "B": "비", "C": "씨", "D": "디", "E": "이", "F": "에프", "G": "지", "H": "에이치", "K": "케이", "L": "엘", "M": "엠", "P": "피", "S": "에스", "Y": "와이"}.get(m.group(1), m.group(1)) + " 씨"),
+    (r"(수사|형사|조사|감사|기획)과(?![가-힣]*과)", r"\1꽈"),             # 수사과 → 수사꽈 (된소리)
+    (r"(수사|형사|조사|감사|기획)과(?=장)", r"\1꽈"),                    # 수사과장 → 수사꽈장
+    (r"(도매|소매)가(?!격)", r"\1까"),                                  # 도매가·소매가(가격) → 도매까·소매까 (조사 '가'로 읽히지 않게)
+    (r"NDFAS", "엔디파스"), (r"KOLAS", "콜라스"), (r"(?<![A-Za-z])AI(?![A-Za-z])", "에이아이"), (r"(?<![A-Za-z])CCTV(?![A-Za-z])", "씨씨티비"),
+    (r"(?<![A-Za-z])TF(?![A-Za-z])", "티에프"), (r"(?<![A-Za-z])SNS(?![A-Za-z])", "에스엔에스"), (r"(?<![A-Za-z])MOU(?![A-Za-z])", "업무협약"),
+    # ── 한자어 접미사 된소리(표준 발음). 표기 그대로 두면 음성이 평음으로 읽는 말들 ──
+    (r"영장(?!류)", "영짱"),                                                   # 영장·체포영장·압수수색영장
+    (r"(고소|고발|공소|소환|임명|위촉|초청|경고)장", r"\1짱"),
+    (r"(수사|기소|공소|소추|지휘|청구|직|인|관할|인사|재량|사법|입법|행정|검찰|경찰|통제|감독|지시|종결|개시|"
+     r"선거|소유|저작|재산|참정|투표|기본|변호인선임|접견교통|접견|방어|항고|구속|체포|정|주|집|특|여)권(?!한|력|리|고)", r"\1꿘"),
+    (r"(\d|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|몇|여러|수십|수백|수천)\s?건(?!설|강|물|축|전|국|재|배)", r"\1껀"),
+    (r"(가능|필요|위법|정당|상당|신빙|실효|독립|중립|전문|공정|타당|적법|합법|개연|합리|비례|보충|객관|중대|구체|긴급|효율|필수)성", r"\1썽"),
+    (r"법제", "법쩨"),
+    (r"(소송|청|조직|선거|자금|금지|헌|형|민|상|불|합|위|적|탈|편)법(?![무령률리관원정안제인조규학치익])", r"\1뻡"),
+    (r"(쟁|문제|공통|차이|유사|의문|접|시|관|허|요|장|단|거|기|종)점(?!검|수|령|유|포)", r"\1쩜"),
+    (r"대가(?=성|를|로|는|도|와|[\s,.])", "대까"),
+    (r"(자|성|인|규|품|합|결|실|적)격(?!렬|하|변|투|식|차|전|돌|려)", r"\1껵"),
+    # ── 과(課): 앞 글자에 받침이 없거나 ㄱ받침이라 조사 '과'와 헷갈리지 않는 부서명만 ──
+    (r"(총무|인사|법무|법쩨|특수|홍보|회계|통계|마약조직범죄|정책|강력)과(?!학|거|목|정|세|오|잉|제)", r"\1꽈"),
+    (r"(?<![가-힣])(성|효)과", r"\1꽈"),
+    # ── 가(價): 조사 '가'와 헷갈리지 않게 앞이 단어 경계인 것만 ──
+    (r"(감정|낙찰|분양|최저|최고|상한|하한|평균|기준|취득|장부|매입|공급|매매|판매|실거래|공시)가(?!격)", r"\1까"),
+    (r"(?<![가-힣])(시|정|원|단|물)가(?!격)", r"\1까"),
+]
+
+
+def pronounce(text: str, sound: bool = False) -> str:
+    """sound=False: 원고(글)용 — 한자·괄호·시간 표기 정리만. sound=True: 음성용 — 거기에 소리 나는 대로 고침(_SOUND)"""
+    if sound:
+        pairs = [x.split("=", 1) for x in re.split(r"[,\n]", AUDIO_DICT) if "=" in x]
+        for a, b in pairs:                         # 사용자 사전 먼저
+            if a.strip():
+                text = text.replace(a.strip(), b.strip())
     for pat, sub in _PRON:
         text = re.sub(pat, sub, text)
+    if sound:
+        for pat, sub in _SOUND:
+            text = re.sub(pat, sub, text)
     return re.sub(r"\s*,\s*,", ",", text)
 
 
@@ -939,13 +966,13 @@ def tidy_summary(t: str) -> str:
     return " ".join(lines)
 
 
-def speakable(text: str) -> str:
-    text = pronounce(polite(text))
+def speakable(text: str, sound: bool = False) -> str:
+    text = pronounce(polite(text), sound)
     text = re.sub(r"(?m)^\s*(#+|[-*•]|\d+[.)])\s+", "", text).replace("**", "")
     text = re.sub(r"[\[(（]\s*(단독|속보|종합|사설|칼럼|기고|포토|영상)\s*[\])）]", " ", text)   # 머리표는 읽지 않음
     text = re.sub(r"[\"“”‘’'「」『』]", "", text)                 # 따옴표는 붙여서('이드러그'도 → 이드러그도)
     text = re.sub(r"[\[\]【】〈〉<>]", " ", text)
-    text = text.replace("·", " ").replace("→", ", ").replace("…", ", ")
+    text = re.sub(r"(?<!\d)·|·(?!\d)", " ", text).replace("→", ", ").replace("…", ", ")
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
@@ -1451,8 +1478,10 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         merged = [[a for i in c for a in groups[i]] for c in audio_cluster(groups)]
         merged.sort(key=lambda g: -len(g))   # AI가 준 순서와 무관하게 기사가 많은 사안부터(파이썬 정렬은 안정적이라 동수면 AI 순서 유지)
         use, more = merged[:AUDIO_MAX], max(len(merged) - AUDIO_MAX, 0)
-        script = speakable(audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
-                                        ("아침" if label == "시험" else label), since, now, more))
+        raw_script = audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
+                                  ("아침" if label == "시험" else label), since, now, more)
+        script = speakable(raw_script)             # 글 원고(텔레그램에 보임): 원래 표기
+        spoken = speakable(raw_script, sound=True) # 음성용: 소리 나는 대로(영장→영짱 등)
         lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})"
                  + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for n, g in enumerate(use, 1)]
         caption = head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
@@ -1464,7 +1493,7 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         state["audio_scripts"] = (state.get("audio_scripts", []) + [[now.isoformat(), label, script]])[-10:]
         path = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
         try:
-            engine = tts_mp3(script, path)
+            engine = tts_mp3(spoken, path)
             mixed = add_bgm(path, now)
             if mixed != path:
                 engine += " + 배경음악(" + BGM_USED[0] + ")"
