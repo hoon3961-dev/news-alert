@@ -67,6 +67,8 @@ jobs:
           AUDIO_TEST: ${{ inputs.audio_test }}
           CARD: ${{ vars.CARD }}
           CARD_MAX: ${{ vars.CARD_MAX }}
+          VERIFY: ${{ vars.VERIFY }}
+          VERIFY_MODEL: ${{ vars.VERIFY_MODEL }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
         run: python news_alert.py
 

@@ -138,6 +138,8 @@ CORE_TERMS = ("중수청", "중대범죄수사청", "공소청", "수사·기소
 CONTEXT_TERMS = ("중수청", "중대범죄수사청", "공소청", "검찰", "검사", "수사", "청장", "공수처",
                  "경찰", "특검", "형사", "법무", "기소", "사법")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
+VERIFY_ON = (os.getenv("VERIFY") or "on").strip().lower() != "off"
+VERIFY_MODEL = (os.getenv("VERIFY_MODEL") or "").strip() or CLAUDE_MODEL
 
 # ── 음성 브리핑(중수청 기사만, 평일 아침·오후) ──────────────────
 # AUDIO=off 로 끄기. AUDIO_TIMES: 만드는 시각(쉼표 구분). 직전 브리핑 이후 보낸 중수청 기사를 담음
@@ -158,7 +160,14 @@ AUDIO_DICT = os.getenv("AUDIO_DICT") or ""
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")   # 없으면 기사 첫머리로 대체
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# 기본 사실표(facts.md): 요약·대본·카드·검증 AI가 모두 참고. '#' 줄은 설명이라 빼고 넘김
+try:
+    FACTS = "\n".join(l for l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "facts.md"),
+                                       encoding="utf-8").read().splitlines() if l.strip() and not l.lstrip().startswith("#"))[:3000]
+except Exception:
+    FACTS = "- 중수청과 공소청은 2026년 10월 2일 출범했다. 중수청은 행정안전부 소속이다."
+# 브리핑·카드를 보내기 전 원문 대조 검증(VERIFY=off로 끄기). VERIFY_MODEL로 검증에만 다른 모델 사용 가능   # 없으면 기사 첫머리로 대체
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
@@ -472,7 +481,10 @@ def summarize(arts: list, _again: bool = False) -> None:
 
     prompt = (
         "다음은 중대범죄수사청(중수청) 언론동향 모니터링을 위해 수집한 기사들이다.\n"
-        f"오늘은 {dt.datetime.now(KST):%Y-%m-%d}이다. 중수청·공소청은 2026-10-02 출범, 김지용 청장은 2026-10-16 임명재가·10-19 임명장 수여.\n"
+        f"오늘은 {dt.datetime.now(KST):%Y-%m-%d}이다.\n[기본 사실]\n{FACTS}\n"
+        "[요약 주의] 제목의 비유·수사적 표현(예: '한 지붕 아래', '칼끝', '시험대')을 사실관계로 바꾸지 않는다. "
+        "기사에 없는 인과관계('~로 ~가 됨', '~에 따라')를 만들지 않는다. 기본 사실과 어긋나게 요약하지 않는다. "
+        "본문이 없어 제목만으로 요약할 때는 요약 끝에 '(제목 기준)'을 붙인다.\n"
         "old 판단: 기사 내용이 이미 며칠 지난 사건을 처음 알리는 당시 보도(예: 청장 임명 재가, 출범 첫날 소식 등)여서 "
         "오늘 기준 2일 넘게 지난 기사로 보이면 old=true. 지난 일을 다루더라도 오늘 새로 쓴 분석·후속 기사면 false.\n"
         "각 기사마다 공무원 내부 보고용으로 핵심 요지를 1~2문장, 개조식 '~함/~임' 체로 요약하라. "
@@ -619,6 +631,7 @@ def similar(t1: str, t2: str, th: float = 0.6) -> bool:
 def to_record(a: dict, now: dt.datetime) -> dict:
     return {"url": a["url"], "title": a["title"], "press": a["press"], "pub": a["pub"].isoformat(),
             "summary": a["summary"], "group": a.get("group"), "found": now.isoformat(),
+            "body": re.sub(r"\s+", " ", a.get("body") or "")[:1000],   # 대본·검증용 원문 앞부분
             "jsc": bool(a.get("priority"))}
 
 
@@ -703,13 +716,13 @@ def audio_due(state: dict, now: dt.datetime):
     return None
 
 
-def ask_claude(prompt: str, max_tokens: int = 8000, timeout: int = 150) -> str:
+def ask_claude(prompt: str, max_tokens: int = 8000, timeout: int = 150, model: str = "") -> str:
     """음성 브리핑용 AI 호출. 답의 글 부분만 돌려줌(생각 블록 등은 건너뜀). 실패하면 오류 기록 후 ''
     답이 길이 제한에 걸려 잘리면 제한을 늘려 다시 요청함"""
     no_think = True                                # '생각' 단계를 끄고(답이 잘리는 원인) 안 되면 기본으로
     for attempt in range(3):
         try:
-            body = {"model": CLAUDE_MODEL, "max_tokens": max_tokens,
+            body = {"model": model or CLAUDE_MODEL, "max_tokens": max_tokens,
                     "messages": [{"role": "user", "content": prompt}]}
             if no_think:
                 body["thinking"] = {"type": "disabled"}
@@ -797,7 +810,8 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
         for x in g[:4]:                            # 같은 사안 여러 기사의 요약을 합쳐 한 번에 전하게
             if x["summary"] and x["summary"] not in sums:
                 sums.append(x["summary"])
-        items.append(f"[사안 {n}] 제목: {g[0]['title']}\n관련 기사 {len(g)}건 요약:\n" + "\n".join(sums or ["(요약 없음)"]))
+        items.append(f"[사안 {n}] 제목: {g[0]['title']}\n관련 기사 {len(g)}건 요약:\n" + "\n".join(sums or ["(요약 없음)"])
+                     + "\n" + _excerpts(g))
     wd = "월화수목금토일"[now.weekday()]
     intro = f"{now.month}월 {now.day}일 {wd}요일 {label}, 중수청 언론보도 브리핑입니다."
     outro = (f"이 밖에도 중수청 관련 소식이 {more}가지 더 있으니, 텔레그램 알림에서 확인해 주십시오. " if more else "") + \
@@ -807,7 +821,8 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "너는 아침·저녁 라디오 뉴스 앵커다. 아래 기사들로 3분 안팎의 라디오 뉴스 원고를 써라. "
             "듣는 사람은 출근길이나 퇴근길에 귀로만 듣는 중대범죄수사청(중수청) 직원이다.\n"
             f"- 첫머리는 그대로: {intro}\n- 맺음말은 그대로: {outro}\n"
-            f"[배경] 오늘은 {now:%Y-%m-%d}이다. 중수청과 공소청은 2026년 10월 2일 이미 출범했다. "
+            f"[배경] 오늘은 {now:%Y-%m-%d}이다. 기본 사실:\n{FACTS}\n"
+            "요약과 기사 본문이 다르면 본문을 따른다. 본문에 없는 내용은 쓰지 않는다. '(제목 기준)' 요약은 제목에 적힌 사실만 전한다. "
             "요약의 '신설 중수청'은 '새로 출범한 중수청'으로 쓰고, '새로 생기는', '신설될', '출범할' 같은 미래 표현은 쓰지 않는다.\n"
             "[구성]\n"
             "- 사안 번호 순서대로, 사안 하나당 한 문단으로 전한다(같은 사안 안의 반응·발언은 그 문단 안에서). "
@@ -1471,6 +1486,133 @@ def send_script(script: str, reply_to: int, head: str) -> None:
             requests.post(url, json=payload, timeout=30)
 
 
+# ── 원문 대조 검증(브리핑·카드를 보내기 전) ────────────────────────────
+def _excerpts(g: list, n: int = 2, size: int = 600) -> str:
+    """대본·카드 AI에 함께 넘길 기사 본문 앞부분"""
+    out = []
+    for x in g[:n]:
+        b = (x.get("body") or "").strip()
+        if b:
+            out.append(f"본문 발췌({x['press']}): {b[:size]}")
+    return "\n".join(out) or "본문 발췌: (없음 - 제목과 요약만 있음)"
+
+
+def _evidence(groups: list) -> str:
+    """검증 근거: 기사 제목과 원문 앞부분(AI 요약은 근거로 쓰지 않음. 원문을 보관하기 전 기록만 예외)"""
+    blocks = []
+    for n, g in enumerate(groups, 1):
+        for x in g[:4]:
+            if "body" not in x:                    # 원문 보관 기능 이전 기록
+                ev = f"(원문 없음, AI 요약 참고) {x.get('summary') or ''}"
+            else:
+                ev = x["body"] or "(본문 없음 - 근거는 제목뿐)"
+            blocks.append(f"[사안 {n}] ({x['press']}) 제목: {x['title']}\n원문: {ev}")
+    return "\n\n".join(blocks)
+
+
+def verify_claims(claims: list, groups: list, now: dt.datetime):
+    """claims=[(번호, 사안번호 또는 0, 문장)] → {번호: 이유} (문제 문장만). 검증 자체가 안 되면 None"""
+    if not claims:
+        return {}
+    if not ANTHROPIC_KEY:
+        return None
+    lines = "\n".join(f"{i}. " + (f"[사안 {k}] " if k else "") + t for i, k, t in claims)
+    prompt = (
+        "너는 공무원 내부 언론보도 브리핑의 사실 검증 담당자다. 아래 [검증할 문장]이 [기사 원문]과 [기본 사실]에 의해 "
+        "뒷받침되는지 한 문장씩 엄격하게 확인하라. 문장을 쓴 사람은 따로 있고, 너는 오류를 찾는 역할이다.\n"
+        "판정 기준:\n"
+        "- 근거없음: 기사 원문(제목 포함)에 없는 사실·숫자·날짜·인물·평가가 들어 있음.\n"
+        "- 왜곡: 원문에 없는 인과관계나 시간관계('~에 따라', '~로 인해', '같은 날', '이후'), 시제 변경(이미 일어난 일을 미래로, 계획을 확정으로), "
+        "소속·직함·기관명·숫자 변경, 제목의 비유를 사실로 바꿈, 의견·추측·전망을 사실로 단정, 주체가 바뀜.\n"
+        "- 기본 사실과 어긋나면 왜곡이다.\n"
+        "- 표현이 달라도 뜻이 같으면 문제 없음. 어려운 용어를 쉬운 말로 푼 것, 존댓말 어미, '먼저·한편' 같은 넘김말은 문제 없음.\n"
+        "- 사안 번호가 붙은 문장은 그 사안의 기사 원문으로 판단한다.\n"
+        "출력: 문제 있는 문장만 JSON 배열로. [{\"n\": 3, \"v\": \"왜곡\", \"why\": \"원문은 ~인데 문장은 ~\"}] 문제가 없으면 []. "
+        "why는 40자 이내.\n\n"
+        f"오늘: {now:%Y-%m-%d}\n[기본 사실]\n{FACTS}\n\n[기사 원문]\n{_evidence(groups)}\n\n[검증할 문장]\n{lines}")
+    text = ask_claude(prompt, 4000, model=VERIFY_MODEL)
+    try:
+        data, _ = json.JSONDecoder().raw_decode(text[text.index("["):])
+        out = {}
+        for d in data:
+            if isinstance(d, dict) and str(d.get("v", "")).strip() in ("왜곡", "근거없음"):
+                out[int(d["n"])] = f"{d.get('v')}: {str(d.get('why', ''))[:60]}"
+        return out
+    except Exception as e:
+        AUDIO_ERR.append(f"검증 실패: {type(e).__name__}: {str(e)[:150]}")
+        return None
+
+
+def _split_sents(p: str) -> list:
+    return [x.strip() for x in re.split(r"(?<=[.?!])\s+", p) if x.strip()]
+
+
+def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime):
+    """대본 문장과 카드 문구를 함께 검증해 문제 문장을 뺌 → (고친 대본, 고친 카드, 뺀 목록, 검증 여부)"""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", raw_script.strip()) if p.strip()]
+    claims, where, i = [], {}, 0
+    for pi, p in enumerate(paras):
+        if pi == 0 or pi == len(paras) - 1:       # 첫머리·맺음말은 검증 제외
+            continue
+        for si, s_ in enumerate(_split_sents(p)):
+            i += 1
+            claims.append((i, 0, s_))
+            where[i] = ("대본", pi, si)
+    for ci, c in enumerate(cards or []):
+        for li, t in enumerate([c["headline"]] + c["points"]):
+            i += 1
+            claims.append((i, ci + 1, t))
+            where[i] = ("카드", ci, li)
+    if not VERIFY_ON:
+        return raw_script, cards, [], True
+    bad = verify_claims(claims, groups, now)
+    if bad is None:
+        return raw_script, cards, [], False
+    text_of = {n: t for n, _, t in claims}
+    removed, drop_s, drop_c = [], set(), set()
+    for n, why in sorted(bad.items()):
+        if n not in where:
+            continue
+        kind, a, b = where[n]
+        removed.append((kind + (f" {a + 1}번" if kind == "카드" else f" {a + 1}문단"), text_of[n], why))
+        (drop_s if kind == "대본" else drop_c).add((a, b))
+    new_paras = []
+    for pi, p in enumerate(paras):
+        if pi in (0, len(paras) - 1):
+            new_paras.append(p)
+            continue
+        keep = [s_ for si, s_ in enumerate(_split_sents(p)) if (pi, si) not in drop_s]
+        if keep:
+            new_paras.append(" ".join(keep))
+    new_cards = []
+    for ci, c in enumerate(cards or []):
+        c = dict(c)
+        if (ci, 0) in drop_c:                      # 제목이 틀렸으면 기사 제목 그대로
+            c["headline"] = _card_fallback(groups[ci])["headline"]
+        pts = [p for li, p in enumerate(c["points"], 1) if (ci, li) not in drop_c]
+        c["points"] = pts or ["세부 내용은 기사 원문을 확인해 주세요."]
+        new_cards.append(c)
+    if removed:
+        AUDIO_ERR.append(f"검증에서 {len(removed)}문장 제외")
+    return "\n\n".join(new_paras), new_cards, removed, True
+
+
+def send_removed(removed: list, reply_to: int, verified: bool) -> None:
+    if verified and not removed:
+        return
+    if not verified:
+        text = "⚠️ <b>자동 검증 실패</b> — 이번 브리핑·카드는 원문 대조를 거치지 않았습니다. 공유 전 내용을 확인해 주세요."
+    else:
+        text = "⚠️ <b>자동 검증에서 뺀 문장</b> (원문과 다르거나 근거가 없어 음성·카드에서 제외)\n" + "\n".join(
+            f"• [{html.escape(w)}] {html.escape(t)}\n  └ {html.escape(y)}" for w, t, y in removed)
+    payload = {"chat_id": TG_CHAT.strip(), "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}
+    if reply_to:
+        payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+    r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json=payload, timeout=30)
+    if not r.ok:
+        print(f"[검증 알림 오류] {r.status_code}: {r.text[:150]}", file=sys.stderr)
+
+
 # ── 카드뉴스(브리핑마다 텔레그램 앨범, 부서 공유용·보고서풍) ─────────────────
 # CARD=off 로 끄기. CARD_MAX: 사안 카드 최대 장수(표지·마무리 포함 10장 이내라 8 이하)
 CARD_ON = (os.getenv("CARD") or "on").strip().lower() != "off"
@@ -1530,7 +1672,7 @@ def card_copy(groups: list, now: dt.datetime) -> list:
             for x in g[:4]:
                 if x["summary"] and x["summary"] not in sums:
                     sums.append(x["summary"])
-            items.append(f"[{n}] 제목: {g[0]['title']}\n요약:\n" + "\n".join(sums or ["(요약 없음)"]))
+            items.append(f"[{n}] 제목: {g[0]['title']}\n요약:\n" + "\n".join(sums or ["(요약 없음)"]) + "\n" + _excerpts(g))
         base = (
             "아래 사안들로 부서 내부 공유용 카드뉴스 문구를 만든다. 사안마다 카드 한 장이다.\n"
             "[형식] JSON 배열만 출력: [{\"i\":0,\"tag\":\"수사\",\"headline\":\"...\",\"points\":[\"...\",\"...\",\"...\"]}]\n"
@@ -1542,7 +1684,7 @@ def card_copy(groups: list, now: dt.datetime) -> list:
             "- 숫자는 요약에 있는 값 그대로 쓴다(단위 바꾸기·반올림 금지).\n"
             "- 평가·전망·의견 표현('논란 확산', '파장', '비상', '난항 불가피' 등 요약에 없는 해석)을 쓰지 않는다.\n"
             "- 언론사 이름은 쓰지 않는다(출처는 따로 붙임).\n"
-            f"- 오늘은 {now:%Y-%m-%d}, 중수청·공소청은 2026-10-02 이미 출범했다. '신설될·새로 생기는' 같은 미래 표현 금지.\n"
+            f"- 오늘은 {now:%Y-%m-%d}. 기본 사실:\n{FACTS}\n- '신설될·새로 생기는' 같은 미래 표현 금지. 요약과 본문이 다르면 본문을 따른다.\n"
             "- 요약에 없는 인과·시간 관계('~에 따라', '같은 날')를 만들지 않는다.\n\n" + "\n\n".join(items))
         prompt = base
         for attempt in range(2):
@@ -1722,10 +1864,11 @@ def send_cards(paths: list, caption: str, reply_to: int = 0) -> None:
     r.raise_for_status()
 
 
-def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int, reply_to: int) -> None:
+def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int, reply_to: int,
+                  cards: list = None, warn: str = "") -> None:
     show = use[:CARD_MAX]
     more += len(use) - len(show)
-    cards = card_copy(show, now)
+    cards = cards if cards is not None else card_copy(show, now)
     sources = [g[0]["press"] + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for g in show]
     wd = "월화수목금토일"[now.weekday()]
     pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
@@ -1735,10 +1878,11 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
     for i, (c, g) in enumerate(zip(cards, show), 1):
         links = " · ".join(f"<a href=\"{html.escape(x['url'], quote=True)}\">{html.escape(x['press'])}</a>" for x in g[:3])
         lines.append(f"{i}. {html.escape(c['headline'])} — {links}")
-    caption = f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용)\n" + "\n".join(lines)
-    while len(caption) > 1000 and lines:          # 텔레그램 설명란 1,024자 제한: 뒤 사안부터 링크 1개로 줄임
+    top = warn + f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용)\n"
+    caption = top + "\n".join(lines)
+    while len(caption) > 1000 and lines:          # 텔레그램 설명란 1,024자 제한: 뒤 사안부터 줄임
         lines.pop()
-        caption = f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용)\n" + "\n".join(lines) + "\n…"
+        caption = top + "\n".join(lines) + "\n…"
     send_cards(paths, caption, reply_to)
     print(f"카드뉴스({label}) 발송: {len(paths)}장")
 
@@ -1768,11 +1912,19 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         use, more = merged[:AUDIO_MAX], max(len(merged) - AUDIO_MAX, 0)
         raw_script = audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
                                   ("아침" if label == "시험" else label), since, now, more)
+        try:
+            cards = card_copy(use[:CARD_MAX], now) if CARD_ON else []
+        except Exception as e:
+            AUDIO_ERR.append(f"카드 문구: {type(e).__name__}: {str(e)[:150]}")
+            cards = [_card_fallback(g) for g in use[:CARD_MAX]] if CARD_ON else []
+        # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
+        raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now)
+        warn = "" if verified else "⚠️ <b>자동 검증 실패 · 공유 전 확인 필요</b>\n"
         script = speakable(raw_script)             # 글 원고(텔레그램에 보임): 원래 표기
         spoken = speakable(raw_script, sound=True) # 음성용: 소리 나는 대로(영장→영짱 등)
         lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})"
                  + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for n, g in enumerate(use, 1)]
-        caption = head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
+        caption = warn + head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
         if more:
             caption += f"\n외 {more}개 사안"
         if len(caption) > 1000:                    # 텔레그램 설명란 1,024자 제한
@@ -1793,10 +1945,14 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
                     send_script(script, mid, "📝 <b>음성 원고</b> (눌러서 펼치기 · 문단 번호로 지적해 주세요)\n")
                 except Exception as e:
                     print(f"[원고 발송 오류] {type(e).__name__}: {e}", file=sys.stderr)
+            try:
+                send_removed(removed, mid, verified)
+            except Exception as e:
+                print(f"[검증 알림 오류] {type(e).__name__}: {e}", file=sys.stderr)
             print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
             if CARD_ON:
                 try:
-                    card_briefing(use, label, now, len(recs), more, mid)
+                    card_briefing(use, label, now, len(recs), more, mid, cards, warn)
                 except Exception as e:
                     AUDIO_ERR.append(f"카드뉴스: {type(e).__name__}: {str(e)[:200]}")
                     print(f"[카드뉴스 실패] {type(e).__name__}: {e}", file=sys.stderr)
@@ -1904,6 +2060,9 @@ def main() -> int:
     keep_a = now - dt.timedelta(days=7)            # 음성용 기록은 7일·최대 300건만 보관(연휴 대비)
     state["audio_log"] = [r for r in state.get("audio_log", [])
                           if dt.datetime.fromisoformat(r["found"]) >= keep_a][-300:]
+    for r in state["audio_log"]:                   # 원문 앞부분은 3일만 보관(저장 용량)
+        if "body" in r and dt.datetime.fromisoformat(r["found"]) < now - dt.timedelta(days=3):
+            r["body"] = ""
 
     state.pop("daily", None), state.pop("daily_sent", None)   # 예전 대응 검토 기록 정리
     state["last_run"] = now.isoformat()
