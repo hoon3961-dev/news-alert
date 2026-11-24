@@ -484,7 +484,8 @@ def summarize(arts: list, _again: bool = False) -> None:
         f"오늘은 {dt.datetime.now(KST):%Y-%m-%d}이다.\n[기본 사실]\n{FACTS}\n"
         "[요약 주의] 제목의 비유·수사적 표현(예: '한 지붕 아래', '칼끝', '시험대')을 사실관계로 바꾸지 않는다. "
         "기사에 없는 인과관계('~로 ~가 됨', '~에 따라')를 만들지 않는다. 기본 사실과 어긋나게 요약하지 않는다. "
-        "본문이 없어 제목만으로 요약할 때는 요약 끝에 '(제목 기준)'을 붙인다.\n"
+        "본문이 없어 제목만으로 요약할 때는 요약 끝에 '(제목 기준)'을 붙인다. "
+        "사진과 짧은 설명뿐인 포토 기사(예: '발언하는 ○○ 청장', '인사 나누는 ○○·○○')는 요약 끝에 '(사진 기사)'를 붙인다.\n"
         "old 판단: 기사 내용이 이미 며칠 지난 사건을 처음 알리는 당시 보도(예: 청장 임명 재가, 출범 첫날 소식 등)여서 "
         "오늘 기준 2일 넘게 지난 기사로 보이면 old=true. 지난 일을 다루더라도 오늘 새로 쓴 분석·후속 기사면 false.\n"
         "각 기사마다 공무원 내부 보고용으로 핵심 요지를 1~2문장, 개조식 '~함/~임' 체로 요약하라. "
@@ -1548,6 +1549,14 @@ def _split_sents(p: str) -> list:
     return [x.strip() for x in re.split(r"(?<=[.?!])\s+", p) if x.strip()]
 
 
+_PHOTO = re.compile(r"사진 기사|포토 기사|사진만 있|[\[【(]\s*(?:포토|사진|화보|포토뉴스)\s*[\]】)]")
+
+
+def is_photo(x: dict) -> bool:
+    """사진 한 장과 설명뿐인 기사(포토 기사) — 브리핑·카드에서 뺌"""
+    return bool(_PHOTO.search(x.get("title", "") + " " + (x.get("summary") or "")))
+
+
 _MARK = re.compile(r"^\s*\[\s*사안\s*(\d+)\s*\]\s*")
 _LEAD = re.compile(r"^(?:(?:다음|마지막) 소식입니다[.,]?|이어서 전해 드립니다[.,]?|(?:먼저|이어서|한편|다음으로|마지막으로)(?:,|\s))\s*")
 
@@ -1596,7 +1605,7 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
             where[i] = ("카드", ci, li)
     bad = verify_claims(claims, groups, now) if VERIFY_ON else {}
     if bad is None:
-        return _transitions(intro, body, outro), cards, [], False
+        return _transitions(intro, body, outro), [dict(c, points=c["points"][:3]) for c in cards or []], [], False
     text_of = {n: t for n, _, t in claims}
     removed, drop_s, drop_c = [], set(), set()
     for n, why in sorted(bad.items()):
@@ -1631,7 +1640,7 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
         if (ci, 0) in drop_c:                      # 제목이 틀렸으면 기사 제목 그대로
             c["headline"] = _card_fallback(groups[ci])["headline"]
         pts = [p for li, p in enumerate(c["points"], 1) if (ci, li) not in drop_c]
-        c["points"] = pts or ["세부 내용은 기사 원문을 확인해 주세요."]
+        c["points"] = pts[:3] or ["세부 내용은 기사 원문을 확인해 주세요."]
         new_cards.append(c)
     if removed:
         AUDIO_ERR.append(f"검증에서 {len(removed)}건 제외")
@@ -1698,8 +1707,12 @@ def _card_fallback(g: list) -> dict:
     a = g[0]
     head = re.sub(r"\s+", " ", re.sub(r"\[[^\]]*\]|【[^】]*】", " ", a["title"])).strip()
     sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+", tidy_summary(a.get("summary") or "")) if len(x.strip()) > 4]
+    sents = [re.sub(r"\s*\((?:제목 기준|사진 기사)\)", "", x) for x in sents if not _META_PT.fullmatch(x)]
     pts = [_cut(x, 70) for x in sents[:3]] or ["기사 원문을 확인해 주세요."]
     return {"tag": "기타", "headline": _cut(head, 46), "points": pts}
+
+
+_META_PT = re.compile(r"본문\s*(?:정보|내용)?\s*(?:이\s*)?없|사진 기사|포토 기사|제목 기준|원문을? 확인")
 
 
 def card_copy(groups: list, now: dt.datetime) -> list:
@@ -1719,7 +1732,8 @@ def card_copy(groups: list, now: dt.datetime) -> list:
             "[형식] JSON 배열만 출력: [{\"i\":0,\"tag\":\"수사\",\"headline\":\"...\",\"points\":[\"...\",\"...\",\"...\"]}]\n"
             f"- tag는 다음 중 하나: {', '.join(CARD_TAGS)}\n"
             "- headline: 무슨 일인지 한 줄, 공백 포함 28자 이내, 명사형으로 끝냄(예: '서울중수청, ○○ 사건 공수처 이첩').\n"
-            "- points: 핵심 사실 3개, 각각 공백 포함 40자 이내, 개조식(~함/~임 대신 명사형·'~하기로' 등으로 짧게).\n"
+            "- points: 핵심 사실을 중요한 순서대로 4개까지(3개 이상을 원칙으로, 기사에 사실이 부족할 때만 2개, 정말 하나뿐일 때만 1개), "
+            "각각 공백 포함 40자 이내, 개조식(~함/~임 대신 명사형·'~하기로' 등으로 짧게). 제목을 되풀이하거나 '본문 없음', '사진 기사' 같은 설명은 쓰지 않는다.\n"
             "[금지]\n"
             "- 요약에 없는 사실·숫자·기관명·직함을 쓰지 않는다. 기관명은 요약에 적힌 그대로 쓴다(예: '서울중수청'을 '서울중앙지검'으로 바꾸지 않음).\n"
             "- 숫자는 요약에 있는 값 그대로 쓴다(단위 바꾸기·반올림 금지).\n"
@@ -1739,7 +1753,7 @@ def card_copy(groups: list, now: dt.datetime) -> list:
             for d in data:
                 try:
                     i = int(d["i"])
-                    pts = [str(p).strip() for p in d.get("points", []) if str(p).strip()][:3]
+                    pts = [str(p).strip() for p in d.get("points", []) if str(p).strip() and not _META_PT.search(str(p))][:4]
                     c = {"tag": d.get("tag") if d.get("tag") in CARD_TAGS else "기타",
                          "headline": str(d["headline"]).strip(), "points": pts}
                 except Exception:
@@ -1829,9 +1843,9 @@ def card_pages(cards: list, sources: list, when: str, when_short: str, label: st
         f"<div style='padding:12px 80px 0'>{rows}</div>"
         f"<div class='foot'><span>{CARD_DISCLAIMER}</span></div>")]
     for i, (c, src) in enumerate(zip(cards, sources), 1):
-        ps = _fit(" ".join(c["points"]), [(110, 40), (140, 36), (999, 32)])
+        ps = _fit(" ".join(c["points"][:3]), [(110, 40), (140, 36), (999, 32)])
         pts = "".join(f"<div class='pt'><div class='dot'></div><div style='font-size:{ps}px;line-height:1.5;font-weight:500'>{_esc(p)}</div></div>"
-                      for p in c["points"])
+                      for p in c["points"][:3])
         pages.append(wrap(
             f"<div style='padding:56px 80px 0'><div class='brand' style='color:#5B6B7F'>"
             f"<span>중수청 언론보도 · {_esc(when_short)}</span><span>{i + 1} / {total}</span></div></div>"
@@ -1936,6 +1950,7 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
     if label == "시험":                            # 시험은 언제 눌러도 들어 볼 수 있게 최근 24시간 기사로
         since = now - dt.timedelta(hours=24)
     recs = [from_record(r) for r in state.get("audio_log", []) if dt.datetime.fromisoformat(r["found"]) > since]
+    recs = [r for r in recs if not is_photo(r)]    # 사진 기사는 음성·카드에서 제외(텍스트 알림에는 그대로)
     for r in recs:                                 # 실행마다 AI 묶음 번호가 달라서 실행 시각과 함께 구분
         r["group"] = f"{r['found']}|{r['group']}" if r.get("group") is not None else None
     wd = "월화수목금토일"
