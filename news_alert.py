@@ -631,7 +631,7 @@ def similar(t1: str, t2: str, th: float = 0.6) -> bool:
 def to_record(a: dict, now: dt.datetime) -> dict:
     return {"url": a["url"], "title": a["title"], "press": a["press"], "pub": a["pub"].isoformat(),
             "summary": a["summary"], "group": a.get("group"), "found": now.isoformat(),
-            "body": re.sub(r"\s+", " ", a.get("body") or "")[:1000],   # 대본·검증용 원문 앞부분
+            "body": re.sub(r"\s+", " ", a.get("body") or "")[:2500],   # 대본·검증용 원문(요약 AI가 본 것과 같은 길이)
             "jsc": bool(a.get("priority"))}
 
 
@@ -832,7 +832,9 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "- 한 사안은 딱 한 번만 다룬다. 같은 사안의 여러 요약은 합쳐서 겹치는 내용 없이 전한다. "
             "앞에서 이미 말한 사실을 뒤 사안에서 되풀이하지 않는다.\n"
             "- 사안마다 핵심을 한 문장으로 먼저 말하고(무슨 일인지), 이어서 배경이나 의미를 1~2문장 덧붙인다.\n"
-            "- 사안을 시작할 때 '먼저', '이어서', '다음 소식입니다', '한편', '마지막 소식입니다'처럼 자연스럽게 넘긴다. 매번 같은 말을 반복하지 않는다.\n"
+            "- 사안 문단은 반드시 '[사안 n]'(n은 아래 사안 번호)으로 시작한다. 한 사안을 두 문단으로 나누면 두 문단 모두 같은 번호를 붙인다. "
+            "'먼저', '이어서', '다음 소식입니다', '마지막 소식입니다' 같은 넘김말은 쓰지 않는다(프로그램이 붙인다). "
+            "각 사안 문단의 첫 문장은 앞 사안을 몰라도 이해되게 주어(누가·어느 기관이)를 밝혀 쓴다.\n"
             "- 언론사 이름이나 '보도에 따르면' 같은 출처 표현은 말하지 않는다. 사실 자체를 바로 전한다.\n"
             "[말투]\n"
             "- 모든 문장은 반드시 '~습니다', '~입니다'로 끝낸다(방송 뉴스 말투). 요약에 있는 '~함, ~임, ~됨, ~했음, ~예정' 같은 개조식 끝맺음을 그대로 옮기지 않는다. "
@@ -874,10 +876,9 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
     parts = [intro]
     for n, g in enumerate(groups, 1):
         a = g[0]
-        lead = "먼저, " if n == 1 else ("마지막 소식입니다. " if n == len(groups) else "다음 소식입니다. ")
-        parts.append(lead + tidy_summary(a["summary"] or a["title"]))
+        parts.append(f"[사안 {n}] " + tidy_summary(a["summary"] or a["title"]))
     parts.append(outro)
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 _POLITE = [  # 문장 끝 개조식·해라체 → 합니다체 (AI가 놓쳐도 음성은 존댓말로)
@@ -1487,7 +1488,7 @@ def send_script(script: str, reply_to: int, head: str) -> None:
 
 
 # ── 원문 대조 검증(브리핑·카드를 보내기 전) ────────────────────────────
-def _excerpts(g: list, n: int = 2, size: int = 600) -> str:
+def _excerpts(g: list, n: int = 2, size: int = 1200) -> str:
     """대본·카드 AI에 함께 넘길 기사 본문 앞부분"""
     out = []
     for x in g[:n]:
@@ -1547,43 +1548,83 @@ def _split_sents(p: str) -> list:
     return [x.strip() for x in re.split(r"(?<=[.?!])\s+", p) if x.strip()]
 
 
+_MARK = re.compile(r"^\s*\[\s*사안\s*(\d+)\s*\]\s*")
+_LEAD = re.compile(r"^(?:(?:다음|마지막) 소식입니다[.,]?|이어서 전해 드립니다[.,]?|(?:먼저|이어서|한편|다음으로|마지막으로)(?:,|\s))\s*")
+
+
+def _parse_script(raw: str):
+    """대본 → (첫머리, [(사안번호, 문단)], 맺음말). '[사안 n]' 표시가 없으면 문단 순서로 번호를 붙임"""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", raw.strip()) if p.strip()]
+    if len(paras) < 3:                             # 문단 구분이 없으면 줄 단위로
+        paras = [p.strip() for p in raw.strip().split("\n") if p.strip()]
+    intro, outro, body = (paras[0] if paras else ""), (paras[-1] if len(paras) > 1 else ""), []
+    for k, p in enumerate(paras[1:-1], 1):
+        m = _MARK.match(p)
+        t = _MARK.sub("", p).strip()
+        t = _LEAD.sub("", t, count=1).strip() or t   # AI가 넘김말을 썼으면 지우고 프로그램이 다시 붙임
+        body.append((int(m.group(1)) if m else k, t))
+    return intro, body, outro
+
+
+def _transitions(intro: str, body: list, outro: str) -> str:
+    """사안이 바뀌는 문단 앞에 넘김말을 프로그램이 직접 붙임(AI가 빠뜨리거나 검증에서 빠져도 항상 들어가게)"""
+    starts = [i for i, (k, _) in enumerate(body) if i == 0 or body[i - 1][0] != k]
+    out = []
+    for i, (k, p) in enumerate(body):
+        if len(starts) > 1 and i in starts:
+            n = starts.index(i)
+            p = ("먼저, " + p) if n == 0 else (("마지막 소식입니다. " if n == len(starts) - 1 else
+                                              ("다음 소식입니다. ", "이어서 전해 드립니다. ")[n % 2]) + p)
+        out.append(p)
+    return "\n\n".join([intro] + out + [outro])
+
+
 def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime):
-    """대본 문장과 카드 문구를 함께 검증해 문제 문장을 뺌 → (고친 대본, 고친 카드, 뺀 목록, 검증 여부)"""
-    paras = [p.strip() for p in re.split(r"\n\s*\n", raw_script.strip()) if p.strip()]
+    """대본 문장과 카드 문구를 함께 검증해 문제 문장을 뺌 → (고친 대본, 고친 카드, 뺀 목록, 검증 여부)
+    문단의 첫 문장이 빠지거나 절반 이상이 빠지면 앞뒤가 끊겨 오해를 부를 수 있어 그 문단을 통째로 뺌"""
+    intro, body, outro = _parse_script(raw_script)
     claims, where, i = [], {}, 0
-    for pi, p in enumerate(paras):
-        if pi == 0 or pi == len(paras) - 1:       # 첫머리·맺음말은 검증 제외
-            continue
+    for pi, (k, p) in enumerate(body):
         for si, s_ in enumerate(_split_sents(p)):
             i += 1
-            claims.append((i, 0, s_))
+            claims.append((i, k if 1 <= k <= len(groups) else 0, s_))
             where[i] = ("대본", pi, si)
     for ci, c in enumerate(cards or []):
         for li, t in enumerate([c["headline"]] + c["points"]):
             i += 1
             claims.append((i, ci + 1, t))
             where[i] = ("카드", ci, li)
-    if not VERIFY_ON:
-        return raw_script, cards, [], True
-    bad = verify_claims(claims, groups, now)
+    bad = verify_claims(claims, groups, now) if VERIFY_ON else {}
     if bad is None:
-        return raw_script, cards, [], False
+        return _transitions(intro, body, outro), cards, [], False
     text_of = {n: t for n, _, t in claims}
     removed, drop_s, drop_c = [], set(), set()
     for n, why in sorted(bad.items()):
         if n not in where:
             continue
         kind, a, b = where[n]
-        removed.append((kind + (f" {a + 1}번" if kind == "카드" else f" {a + 1}문단"), text_of[n], why))
         (drop_s if kind == "대본" else drop_c).add((a, b))
-    new_paras = []
-    for pi, p in enumerate(paras):
-        if pi in (0, len(paras) - 1):
-            new_paras.append(p)
+        if kind == "카드":
+            removed.append((f"카드 {a + 1}번", text_of[n], why))
+    new_body, dead = [], set()
+    for pi, (k, p) in enumerate(body):
+        lead = pi == 0 or body[pi - 1][0] != k     # 이 사안의 첫 문단인지
+        if k in dead and not lead:                 # 사안 첫 문단이 빠졌으면 이어지는 문단도 맥락이 없어 뺌
+            removed.append((f"대본 사안 {k} 이어지는 문단", p, "같은 사안의 첫 문단이 빠져 함께 제외"))
             continue
-        keep = [s_ for si, s_ in enumerate(_split_sents(p)) if (pi, si) not in drop_s]
+        sents = _split_sents(p)
+        gone = [si for si in range(len(sents)) if (pi, si) in drop_s]
+        whys = [bad[n] for n in bad if where.get(n, ("", -1, -1))[:2] == ("대본", pi)]
+        if gone and (0 in gone or len(gone) * 2 >= len(sents)):
+            removed.append((f"대본 사안 {k} 문단 전체", p, "주요 문장이 원문과 달라 문단 전체 제외 — " + "; ".join(whys)[:120]))
+            if lead:
+                dead.add(k)
+            continue
+        for si in gone:
+            removed.append((f"대본 사안 {k}", sents[si], bad[[n for n in bad if where.get(n) == ("대본", pi, si)][0]]))
+        keep = [x for si, x in enumerate(sents) if si not in gone]
         if keep:
-            new_paras.append(" ".join(keep))
+            new_body.append((k, " ".join(keep)))
     new_cards = []
     for ci, c in enumerate(cards or []):
         c = dict(c)
@@ -1593,8 +1634,8 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
         c["points"] = pts or ["세부 내용은 기사 원문을 확인해 주세요."]
         new_cards.append(c)
     if removed:
-        AUDIO_ERR.append(f"검증에서 {len(removed)}문장 제외")
-    return "\n\n".join(new_paras), new_cards, removed, True
+        AUDIO_ERR.append(f"검증에서 {len(removed)}건 제외")
+    return _transitions(intro, new_body, outro), new_cards, removed, True
 
 
 def send_removed(removed: list, reply_to: int, verified: bool) -> None:
@@ -1920,6 +1961,7 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
         raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now)
         warn = "" if verified else "⚠️ <b>자동 검증 실패 · 공유 전 확인 필요</b>\n"
+        state["audio_verify"] = (state.get("audio_verify", []) + [[now.isoformat(), verified, removed]])[-10:]
         script = speakable(raw_script)             # 글 원고(텔레그램에 보임): 원래 표기
         spoken = speakable(raw_script, sound=True) # 음성용: 소리 나는 대로(영장→영짱 등)
         lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})"
