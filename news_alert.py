@@ -59,8 +59,8 @@ STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모
 DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES") or "120")   # 공소청·형사사법 기사 모음 간격(분) — DIGEST_TIMES=off일 때만
 # 공소청·형사사법 모음을 보내는 시각(쉼표 구분). off면 DIGEST_MINUTES 간격으로
 DIGEST_TIMES = (os.getenv("DIGEST_TIMES") or "09:00,13:00,18:00").strip()
-# 모음 모양: list(기본, 기사마다 제목 한 줄·제목을 누르면 기사) / fold(요약까지 접어서) / full(예전처럼 요약 펼침)
-DIGEST_STYLE = (os.getenv("DIGEST_STYLE") or "list").strip().lower()
+# 모음 모양: full(기본, 요약까지 펼침) / list(기사마다 제목 한 줄) / fold(접어서 — 펼친 뒤 누르면 다시 접혀 불편)
+DIGEST_STYLE = (os.getenv("DIGEST_STYLE") or "full").strip().lower()
 LEAD_TERMS = ("중수청", "중대범죄수사청")             # 본문 첫머리에 있으면 중수청 기사로 봄
 KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
@@ -2166,7 +2166,7 @@ def main() -> int:
             items.append(p_)
         since = last.strftime("%H:%M") if last and last.date() == now.date() else "직전"
         head = (f"📚 <b>공소청·형사사법 모음</b> {since}~{now:%H:%M} · {len(items)}건"
-                + (" (눌러서 펼치기)" if DIGEST_STYLE == "fold" else " · 제목을 누르면 기사") + "\n\n")
+                + {"fold": " (눌러서 펼치기)", "list": " · 제목을 누르면 기사"}.get(DIGEST_STYLE, "") + "\n")
         msgs = (format_list(items, now, head) if DIGEST_STYLE == "list" else
                 format_messages(items, now, head, collapse=(DIGEST_STYLE == "fold")))
         for msg in msgs:
