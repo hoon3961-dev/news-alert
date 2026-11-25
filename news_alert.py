@@ -857,11 +857,13 @@ def audio_cluster(groups: list) -> list:
     if ANTHROPIC_KEY and n > 1:
         lines = "\n".join(f"[{i}] {g[0]['title']} / {(g[0]['summary'] or '')[:120]}" for i, g in enumerate(groups))
         prompt = ("아래 기사 목록에서 같은 사안(같은 사건·발표·인사·조치)을 다룬 기사 번호끼리 묶어라. "
-                  "표현이 달라도 같은 일이면 같은 묶음이다. 같은 기관·같은 주제라도 다른 일(예: 장비 이관과 청사 이전)은 따로 둔다. 애매하면 따로 둔다. "
+                  "표현이 달라도 같은 일이면 같은 묶음이다. 같은 쟁점을 다룬 후속·반응·해설 기사도 같은 묶음이다"
+                  "(예: '공소청-중수청, 국제회의 두고 또 충돌'과 '국제회의 개최 권한 놓고 중수청·공소청 충돌'은 같은 사안). "
+                  "같은 기관·같은 주제라도 다른 일(예: 장비 이관과 청사 이전)은 따로 둔다. "
                   "묶음 순서는 중요도 순(기사 수가 많을수록, 중수청 조직·청장·주요 사건일수록 앞). "
                   "모든 번호가 정확히 한 번씩 들어가야 한다. JSON 배열만 출력: [[0,3],[1],[2,4]]\n\n" + lines)
         try:
-            text = ask_claude(prompt, 4000)
+            text = ask_claude(prompt, 4000, model=VERIFY_MODEL)   # 묶기는 판단이 중요해 검증과 같은 모델 사용
             data, _ = json.JSONDecoder().raw_decode(text[text.index("["):])   # 뒤에 설명이 붙어도 첫 배열만
             out, used = [], set()
             for c in data:
@@ -1835,7 +1837,8 @@ def unsupported(text: str, src: str, now: dt.datetime = None) -> list:
 
 
 def _src_text(g: list) -> str:
-    return "\n".join(f"{x['title']} {x.get('summary') or ''}" for x in g)
+    # 카드 AI에 본문 발췌도 주므로, 대조 기준에도 본문을 넣어야 본문에 있는 숫자·기관명을 '지어낸 것'으로 오인하지 않음
+    return "\n".join(f"{x['title']} {x.get('summary') or ''} {(x.get('body') or '')[:2500]}" for x in g)
 
 
 _HANJA = {"李": "이", "尹": "윤", "文": "문", "朴": "박", "與": "여당", "野": "야당", "檢": "검찰", "警": "경찰",
