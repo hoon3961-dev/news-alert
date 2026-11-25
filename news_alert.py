@@ -1953,7 +1953,7 @@ body{background:#fff;color:#1B2A3D;font-family:'Pretendard','Noto Sans CJK KR','
  font-size:23px;color:#8592A3;display:flex;justify-content:space-between;gap:24px}
 .ic{display:flex;align-items:center;justify-content:center;flex:none}
 """
-_NAVY, _NAVY2, _SOFT, _LINE, _SUB = "#1F3A5F", "#2E5C8A", "#EEF3F9", "#D9E0E8", "#5B6B7F"
+_NAVY, _NAVY2, _SOFT, _LINE, _SUB = "#003764", "#2E5C8A", "#EEF3F9", "#D9E0E8", "#5B6B7F"
 # 분류별 선 아이콘(직접 그린 단순 도형 — 저작권 문제 없음)
 _ICON = {
     "수사": '<circle cx="26" cy="26" r="15"/><line x1="37" y1="37" x2="52" y2="52"/>',
@@ -1999,6 +1999,20 @@ def _fit(text: str, sizes: list) -> int:
     return sizes[-1][1]
 
 
+def _mi(h: int) -> str:
+    """중수청 기관문양(MI) 원본 — 형태·색상·비율 변경 금지 규정에 따라 흰 바탕 위에 원본 그대로, 높이만 맞춤"""
+    fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "sci_mi.png")
+    if not os.path.exists(fp):
+        return ""
+    import base64
+    return f"<img src='data:image/png;base64,{base64.b64encode(open(fp, 'rb').read()).decode()}' style='height:{h}px;width:auto;display:block'>"
+
+
+def _plate(h: int, pad: str) -> str:
+    m = _mi(h)
+    return f"<div style='display:inline-block;background:#fff;border-radius:16px;padding:{pad}'>{m}</div>" if m else ""
+
+
 def _deco() -> str:
     return ("<div style='position:absolute;right:-70px;top:-60px;width:440px;height:440px;border-radius:50%;background:rgba(255,255,255,.06)'></div>"
             "<div style='position:absolute;right:110px;top:170px;width:220px;height:220px;border-radius:50%;background:rgba(79,134,198,.22)'></div>")
@@ -2018,20 +2032,20 @@ def card_pages(cards: list, sources: list, when: str, when_short: str, label: st
         f"<div><div style='font-size:{ts - 9}px;font-weight:700;color:{col(c['tag'])}'>{i:02d} · {_esc(c['tag'])}</div>"
         f"<div style='font-size:{ts}px;font-weight:700;line-height:1.3;margin-top:2px'>{_esc(c['headline'])}</div></div></div>"
         for i, c in enumerate(cards, 1))
-    big = 80 if k <= 4 else 68
+    big = 80 if k <= 4 else 64
     pages = [wrap(
-        f"<div style='background:{_NAVY};color:#fff;padding:56px 80px {90 if k <= 4 else 74}px;position:relative;overflow:hidden'>{_deco()}"
-        f"<div style='display:flex;justify-content:space-between;font-size:28px;font-weight:700;opacity:.85;position:relative'>"
-        f"<span>언론보도 모니터링</span><span>1 / {total}</span></div>"
-        f"<div style='display:inline-block;margin-top:{40 if k <= 4 else 28}px;padding:10px 22px;border:2px solid rgba(255,255,255,.5);"
+        f"<div style='background:{_NAVY};color:#fff;padding:44px 80px {90 if k <= 4 else 74}px;position:relative;overflow:hidden'>{_deco()}"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;font-size:28px;font-weight:700;position:relative'>"
+        f"{_plate(40, '12px 20px') or '<span>언론보도 모니터링</span>'}<span>1 / {total}</span></div>"
+        f"<div style='display:inline-block;margin-top:{32 if k <= 4 else 22}px;padding:8px 22px;border:2px solid rgba(255,255,255,.5);"
         f"border-radius:999px;font-size:28px;position:relative'>{_esc(when)}</div>"
-        f"<div style='font-size:{big}px;font-weight:900;line-height:1.12;margin-top:22px;position:relative'>중수청<br>언론보도 브리핑</div>"
-        f"<div style='display:flex;gap:40px;margin-top:26px;font-size:28px;position:relative'>"
+        f"<div style='font-size:{big}px;font-weight:900;line-height:1.12;margin-top:18px;position:relative'>중수청<br>언론보도 브리핑</div>"
+        f"<div style='display:flex;gap:40px;margin-top:16px;font-size:28px;position:relative'>"
         f"<div><b style='font-size:60px;font-weight:900'>{n_art}</b><span style='opacity:.8'> 건 기사</span></div>"
         f"<div><b style='font-size:60px;font-weight:900'>{k + more}</b><span style='opacity:.8'> 개 사안</span></div>"
         f"<div style='align-self:flex-end;opacity:.7;padding-bottom:8px'>{_esc(label)}</div></div></div>"
-        f"<div style='position:absolute;left:0;right:0;bottom:0;top:{560 if k <= 4 else 500}px;background:{_SOFT}'></div>"
-        f"<div style='position:absolute;top:{510 if k <= 4 else 450}px;bottom:150px;left:60px;right:60px;display:flex;flex-direction:column;gap:{tg}px'>{tiles}</div>"
+        f"<div style='position:absolute;left:0;right:0;bottom:0;top:{600 if k <= 4 else 530}px;background:{_SOFT}'></div>"
+        f"<div style='position:absolute;top:{570 if k <= 4 else 510}px;bottom:150px;left:60px;right:60px;display:flex;flex-direction:column;gap:{tg}px'>{tiles}</div>"
         f"<div class='foot'><span>{CARD_DISCLAIMER}</span><span>카드 {total}장</span></div>")]
     # ── 사안 카드: 머리띠 + 제목 + (핵심 수치) + 요점 상자(연한 바탕을 고르게 채움) ──
     for i, (c, src) in enumerate(zip(cards, sources), 1):
@@ -2080,7 +2094,8 @@ def card_pages(cards: list, sources: list, when: str, when_short: str, label: st
         f"<span style='color:#9CC3EA'>링크</span>에서 확인하세요</div>"
         f"<div style='font-size:31px;line-height:1.7;margin-top:52px;opacity:.85;position:relative;border-top:2px solid rgba(255,255,255,.25);padding-top:40px'>{extra}"
         f"이 카드는 언론 보도 내용을 요약한 것으로<br>사실관계가 확인되지 않은 내용이 포함될 수 있습니다.<br>"
-        f"외부 배포를 금합니다.</div></div>"))
+        f"외부 배포를 금합니다.</div>"
+        f"<div style='position:absolute;left:0;right:0;bottom:64px;display:flex;justify-content:center'>{_plate(56, '18px 30px')}</div></div>"))
     return pages
 
 
