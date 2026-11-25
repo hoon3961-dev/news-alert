@@ -59,8 +59,9 @@ STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모
 DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES") or "120")   # 공소청·형사사법 기사 모음 간격(분) — DIGEST_TIMES=off일 때만
 # 공소청·형사사법 모음을 보내는 시각(쉼표 구분). off면 DIGEST_MINUTES 간격으로
 DIGEST_TIMES = (os.getenv("DIGEST_TIMES") or "09:00,13:00,18:00").strip()
-# 모음 모양: full(기본, 요약까지 펼침) / list(기사마다 제목 한 줄) / fold(접어서 — 펼친 뒤 누르면 다시 접혀 불편)
-DIGEST_STYLE = (os.getenv("DIGEST_STYLE") or "full").strip().lower()
+# 모음 모양: page(기본, 텔레그래프 웹페이지 한 장 + 대화방엔 링크 한 줄) / full(요약까지 펼침) / list(제목 한 줄씩) / fold(접기 — 누르면 다시 접혀 불편)
+DIGEST_STYLE = (os.getenv("DIGEST_STYLE") or "page").strip().lower()
+DIGEST_TEST = (os.getenv("DIGEST_TEST") or "").strip().lower() == "true"   # Actions 수동 시험: 대기 중인 모음을 지금 보냄
 LEAD_TERMS = ("중수청", "중대범죄수사청")             # 본문 첫머리에 있으면 중수청 기사로 봄
 KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
@@ -646,6 +647,42 @@ def from_record(r: dict) -> dict:
     return r
 
 
+def telegraph_page(arts: list, now: dt.datetime, title: str, intro: str) -> str:
+    """모음을 텔레그래프(telegra.ph) 웹페이지 한 장으로 → 주소. 텔레그램 안에서 바로 열림(Instant View).
+    주소를 아는 사람만 볼 수 있지만 비공개는 아님(공개된 기사 요약만 담음)"""
+    api = "https://api.telegra.ph"
+    token = (os.getenv("TELEGRAPH_TOKEN") or "").strip()
+    if not token:
+        r = requests.get(f"{api}/createAccount", params={"short_name": "news-alert", "author_name": "언론보도 모니터링"}, timeout=20)
+        token = r.json()["result"]["access_token"]
+    nodes = [{"tag": "p", "children": [{"tag": "em", "children": [intro]}]}]
+    for n, g in enumerate(group_articles(arts), 1):
+        a = g[0]
+        nodes.append({"tag": "h4", "children": [f"{n}. {a['title']}"]})
+        nodes.append({"tag": "p", "children": [{"tag": "em", "children": [f"{a['press']} · {fmt_time(a['pub'], now)}"]}]})
+        if a.get("summary"):
+            nodes.append({"tag": "p", "children": [a["summary"]]})
+        links = [{"tag": "a", "attrs": {"href": a["url"]}, "children": ["▶ 기사 보기"]}]
+        if len(g) > 1:
+            links.append(f"  (같은 내용 {len(g) - 1}건: ")
+            for j, x in enumerate(g[1:6]):
+                links += ([" · "] if j else []) + [{"tag": "a", "attrs": {"href": x["url"]}, "children": [x["press"]]}]
+            links.append(")")
+        nodes.append({"tag": "p", "children": links})
+    content = json.dumps(nodes, ensure_ascii=False)
+    if len(content.encode()) > 60000:              # 페이지 용량 제한(64KB) 대비: 요약을 줄임
+        for nd in nodes:
+            if nd["tag"] == "p" and nd["children"] and isinstance(nd["children"][0], str) and len(nd["children"][0]) > 120:
+                nd["children"][0] = nd["children"][0][:120] + "…"
+        content = json.dumps(nodes, ensure_ascii=False)
+    r = requests.post(f"{api}/createPage", data={"access_token": token, "title": title[:250], "author_name": "언론보도 모니터링",
+                                                 "content": content, "return_content": "false"}, timeout=30)
+    res = r.json()
+    if not res.get("ok"):
+        raise RuntimeError(f"텔레그래프 오류: {str(res)[:200]}")
+    return res["result"]["url"]
+
+
 def digest_due(last, now: dt.datetime):
     """모음 보낼 때인지 → (보낼지, 다음 발송 안내). 정해진 시각이 지났고 그 뒤로 아직 안 보냈으면 보냄"""
     if DIGEST_TIMES.lower() == "off":
@@ -718,11 +755,11 @@ def format_messages(arts: list, now: dt.datetime, header: str, collapse: bool = 
     return msgs
 
 
-def send_telegram(text: str, silent: bool = False) -> None:
+def send_telegram(text: str, silent: bool = False, preview: bool = False) -> None:
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     chat = TG_CHAT.strip()
     payload = {"chat_id": chat, "text": text, "parse_mode": "HTML",
-               "disable_web_page_preview": True, "disable_notification": silent}
+               "disable_web_page_preview": not preview, "disable_notification": silent}
     r = requests.post(url, json=payload, timeout=15)
     if r.ok:
         return
@@ -2227,6 +2264,7 @@ def main() -> int:
             state["pending"].append(to_record(a, now))
     last = dt.datetime.fromisoformat(state["last_digest"]) if state["last_digest"] else None
     due, nxt = digest_due(last, now)
+    due = due or DIGEST_TEST
     if state["pending"] and due:
         items = []
         for p_ in state["pending"]:
@@ -2238,10 +2276,22 @@ def main() -> int:
         since = last.strftime("%H:%M") if last and last.date() == now.date() else "직전"
         head = (f"📚 <b>공소청·형사사법 모음</b> {since}~{now:%H:%M} · {len(items)}건"
                 + {"fold": " (눌러서 펼치기)", "list": " · 제목을 누르면 기사"}.get(DIGEST_STYLE, "") + "\n")
-        msgs = (format_list(items, now, head) if DIGEST_STYLE == "list" else
-                format_messages(items, now, head, collapse=(DIGEST_STYLE == "fold")))
-        for msg in msgs:
-            send_telegram(msg, silent=True)            # 알림 소리 없이(중수청 기사만 울리게)
+        page = ""
+        if DIGEST_STYLE == "page":                     # 웹페이지 한 장으로 만들고 대화방엔 링크 한 줄만
+            try:
+                n_grp = len(group_articles(items))
+                page = telegraph_page(items, now, f"공소청·형사사법 모음 {now:%m.%d.} {since}~{now:%H:%M} ({len(items)}건)",
+                                      f"{now:%Y.%m.%d.} {since}~{now:%H:%M} 신규 {len(items)}건 · {n_grp}개 사안 · 언론보도 요약(사실관계 확인 전)")
+            except Exception as e:
+                print(f"[모음 페이지 실패 → 글로 보냄] {type(e).__name__}: {e}", file=sys.stderr)
+        if page:
+            send_telegram(f"📚 <b>공소청·형사사법 모음</b> {since}~{now:%H:%M} · {len(items)}건\n"
+                          f"<a href=\"{html.escape(page, quote=True)}\">▶ 모음 보기 (요약·기사 링크)</a>", silent=True, preview=True)
+        else:
+            msgs = (format_list(items, now, head) if DIGEST_STYLE == "list" else
+                    format_messages(items, now, head, collapse=(DIGEST_STYLE == "fold")))
+            for msg in msgs:
+                send_telegram(msg, silent=True)        # 알림 소리 없이(중수청 기사만 울리게)
         print(f"공소청·형사사법 {len(items)}건 모음 발송")
         state["pending"] = []
         state["last_digest"] = now.isoformat()

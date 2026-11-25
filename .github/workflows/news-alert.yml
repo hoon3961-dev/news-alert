@@ -9,6 +9,10 @@ on:
         description: "음성 브리핑 지금 시험 발송"
         type: boolean
         default: false
+      digest_test:
+        description: "공소청·형사사법 모음 지금 시험 발송(대기 중인 기사)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -45,6 +49,8 @@ jobs:
           DIGEST_MINUTES: ${{ vars.DIGEST_MINUTES }}
           DIGEST_TIMES: ${{ vars.DIGEST_TIMES }}
           DIGEST_STYLE: ${{ vars.DIGEST_STYLE }}
+          DIGEST_TEST: ${{ inputs.digest_test }}
+          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_TOKEN }}
           EXCLUDE_PRESS: ${{ vars.EXCLUDE_PRESS }}
           EXCLUDE_WORDS: ${{ vars.EXCLUDE_WORDS }}
           QUERIES: ${{ vars.QUERIES }}
