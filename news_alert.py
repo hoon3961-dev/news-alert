@@ -1571,6 +1571,11 @@ def _evidence(groups: list) -> str:
     return "\n\n".join(blocks)
 
 
+_SELF_OK = re.compile(r"일치(?!하지|\s*않)|문제\s*없|맞음|맞으나|맞는|동일|같은 취지|취지(?:는|가)? 같|생략")
+# 검증이 문장을 너무 많이 빼면(검증 쪽 오류일 가능성) 빼지 않고 의심 표시만
+VERIFY_MAX_DROP = float(os.getenv("VERIFY_MAX_DROP") or "0.3")
+
+
 def verify_claims(claims: list, groups: list, now: dt.datetime):
     """claims=[(번호, 사안번호 또는 0, 문장)] → {번호: 이유} (문제 문장만). 검증 자체가 안 되면 None"""
     if not claims:
@@ -1579,25 +1584,42 @@ def verify_claims(claims: list, groups: list, now: dt.datetime):
         return None
     lines = "\n".join(f"{i}. " + (f"[사안 {k}] " if k else "") + t for i, k, t in claims)
     prompt = (
-        "너는 공무원 내부 언론보도 브리핑의 사실 검증 담당자다. 아래 [검증할 문장]이 [기사 원문]과 [기본 사실]에 의해 "
-        "뒷받침되는지 한 문장씩 엄격하게 확인하라. 문장을 쓴 사람은 따로 있고, 너는 오류를 찾는 역할이다.\n"
-        "판정 기준:\n"
-        "- 근거없음: 기사 원문(제목 포함)에 없는 사실·숫자·날짜·인물·평가가 들어 있음.\n"
-        "- 왜곡: 원문에 없는 인과관계나 시간관계('~에 따라', '~로 인해', '같은 날', '이후'), 시제 변경(이미 일어난 일을 미래로, 계획을 확정으로), "
-        "소속·직함·기관명·숫자 변경, 제목의 비유를 사실로 바꿈, 의견·추측·전망을 사실로 단정, 주체가 바뀜.\n"
-        "- 기본 사실과 어긋나면 왜곡이다.\n"
-        "- 표현이 달라도 뜻이 같으면 문제 없음. 어려운 용어를 쉬운 말로 푼 것, 존댓말 어미, '먼저·한편' 같은 넘김말은 문제 없음.\n"
-        "- 사안 번호가 붙은 문장은 그 사안의 기사 원문으로 판단한다.\n"
-        "출력: 문제 있는 문장만 JSON 배열로. [{\"n\": 3, \"v\": \"왜곡\", \"why\": \"원문은 ~인데 문장은 ~\"}] 문제가 없으면 []. "
-        "why는 40자 이내.\n\n"
+        "너는 공무원 내부 언론보도 브리핑의 사실 검증 담당자다. 아래 [검증할 문장]을 [기사 원문]과 [기본 사실]에 대조해 "
+        "'틀린 문장'만 찾아라. 문장을 쓴 사람은 따로 있다.\n"
+        "틀린 문장으로 표시하는 경우(이것만):\n"
+        "- 원문과 반대되거나 다른 사실: 숫자·날짜·기관명·소속·직함·주체가 원문과 다름, 원문에 없는 인과관계를 만듦, "
+        "이미 일어난 일을 미래로(또는 계획을 확정으로) 바꿈, 제목의 비유를 사실로 바꿈, 의견·추측을 사실로 단정.\n"
+        "- 원문 어디에도 없는 새 사실(숫자·사건·인물·발언)을 덧붙임.\n"
+        "- 기본 사실과 어긋남.\n"
+        "틀린 것이 아닌 경우(표시 금지):\n"
+        "- 원문 정보를 줄이거나 생략함(예: 기간·조건을 빼고 핵심만 말함). 빠진 정보는 오류가 아니다.\n"
+        "- 표현만 다르고 뜻이 같음, 쉬운 말로 풀어씀, 여러 문장을 합침, 존댓말 어미, 넘김말.\n"
+        "- 원문과 일치함. 일치하면 절대 표시하지 않는다.\n"
+        "- 확신이 없으면 표시하지 않는다.\n"
+        "- 사안 번호가 붙은 문장은 그 사안 원문으로, 번호가 없으면 전체 원문으로 판단한다.\n"
+        "출력: 틀린 문장만 JSON 배열. 각 항목에 문장 번호 n, 그 문장의 앞 10글자 head, 판정 v('왜곡' 또는 '근거없음'), "
+        "원문에서 어긋나는 부분을 그대로 옮긴 src(근거없음이면 ''), 이유 why(40자 이내).\n"
+        "[{\"n\": 3, \"head\": \"이에 따라 경찰\", \"v\": \"왜곡\", \"src\": \"행안부는 경찰청과 중수청을 관할한다\", \"why\": \"지명이 소속을 바꾼다고 씀\"}]\n"
+        "틀린 문장이 없으면 []만 출력.\n\n"
         f"오늘: {now:%Y-%m-%d}\n[기본 사실]\n{FACTS}\n\n[기사 원문]\n{_evidence(groups)}\n\n[검증할 문장]\n{lines}")
     text = ask_claude(prompt, 4000, model=VERIFY_MODEL)
+    by_n = {i: t for i, _, t in claims}
     try:
         data, _ = json.JSONDecoder().raw_decode(text[text.index("["):])
         out = {}
         for d in data:
-            if isinstance(d, dict) and str(d.get("v", "")).strip() in ("왜곡", "근거없음"):
-                out[int(d["n"])] = f"{d.get('v')}: {str(d.get('why', ''))[:60]}"
+            if not isinstance(d, dict) or str(d.get("v", "")).strip() not in ("왜곡", "근거없음"):
+                continue
+            n, why = int(d["n"]), str(d.get("why", ""))
+            if n not in by_n:
+                continue
+            head = re.sub(r"\s+", "", str(d.get("head", "")))[:6]
+            if head and head not in re.sub(r"\s+", "", by_n[n])[:20]:
+                AUDIO_ERR.append(f"검증 번호 불일치 무시: {n}")   # 번호를 잘못 짚은 판정
+                continue
+            if _SELF_OK.search(why):               # 이유에 '일치·문제 없음'이라 적고 표시한 모순 판정은 무시
+                continue
+            out[n] = f"{d.get('v')}: {why[:60]}"
         return out
     except Exception as e:
         AUDIO_ERR.append(f"검증 실패: {type(e).__name__}: {str(e)[:150]}")
@@ -1674,6 +1696,16 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
     if bad is None:
         return _transitions(intro, body, outro), [dict(c, points=c["points"][:3]) for c in cards or []], [], False
     text_of = {n: t for n, _, t in claims}
+    n_script = sum(1 for w in where.values() if w[0] == "대본")
+    n_card = len(where) - n_script
+    f_script = sum(1 for n in bad if where.get(n, ("",))[0] == "대본")
+    f_card = sum(1 for n in bad if where.get(n, ("",))[0] == "카드")
+    if (f_script >= 2 and f_script > n_script * VERIFY_MAX_DROP) or (f_card >= 2 and f_card > n_card * VERIFY_MAX_DROP):
+        # 너무 많이 걸렸으면 검증 쪽 오류일 가능성이 커서 빼지 않고 원고 그대로 + 의심 문장만 알림
+        AUDIO_ERR.append(f"검증 과다(대본 {f_script}/{n_script}, 카드 {f_card}/{n_card}) → 적용 안 함")
+        sus = [(("카드 " + str(where[n][1] + 1) + "번") if where[n][0] == "카드" else "대본", text_of[n], why)
+               for n, why in sorted(bad.items()) if n in where]
+        return _transitions(intro, body, outro), [dict(c, points=c["points"][:3]) for c in cards or []], sus, "over"
     removed, drop_s, drop_c = [], set(), set()
     for n, why in sorted(bad.items()):
         if n not in where:
@@ -1717,7 +1749,11 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
 def send_removed(removed: list, reply_to: int, verified: bool) -> None:
     if verified and not removed:
         return
-    if not verified:
+    if verified == "over":
+        text = ("⚠️ <b>자동 검증 결과 불확실</b> — 검증이 너무 많은 문장을 걸러 검증 쪽 오류일 수 있어 <b>빼지 않고 그대로</b> 보냈습니다. "
+                "아래 의심 문장은 공유 전 원문과 확인해 주세요.\n" + "\n".join(
+                    f"• [{html.escape(w)}] {html.escape(t)}\n  └ {html.escape(y)}" for w, t, y in removed))
+    elif not verified:
         text = "⚠️ <b>자동 검증 실패</b> — 이번 브리핑·카드는 원문 대조를 거치지 않았습니다. 공유 전 내용을 확인해 주세요."
     else:
         text = "⚠️ <b>자동 검증에서 뺀 문장</b> (원문과 다르거나 근거가 없어 음성·카드에서 제외)\n" + "\n".join(
@@ -2043,7 +2079,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
         lab = "오후" if label == "시험" and now.hour >= 12 else ("아침" if label == "시험" else label)
         raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now, closing_text(lab, now, more))
-        warn = "" if verified else "⚠️ <b>자동 검증 실패 · 공유 전 확인 필요</b>\n"
+        warn = ("" if verified is True else "⚠️ <b>자동 검증 결과 불확실 · 공유 전 확인 필요</b>\n" if verified == "over"
+                else "⚠️ <b>자동 검증 실패 · 공유 전 확인 필요</b>\n")
         state["audio_verify"] = (state.get("audio_verify", []) + [[now.isoformat(), verified, removed]])[-10:]
         script = speakable(raw_script)             # 글 원고(텔레그램에 보임): 원래 표기
         spoken = speakable(raw_script, sound=True) # 음성용: 소리 나는 대로(영장→영짱 등)
