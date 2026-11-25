@@ -43,6 +43,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           QUIET_HOURS: ${{ vars.QUIET_HOURS }}
           DIGEST_MINUTES: ${{ vars.DIGEST_MINUTES }}
+          DIGEST_TIMES: ${{ vars.DIGEST_TIMES }}
           EXCLUDE_PRESS: ${{ vars.EXCLUDE_PRESS }}
           EXCLUDE_WORDS: ${{ vars.EXCLUDE_WORDS }}
           QUERIES: ${{ vars.QUERIES }}

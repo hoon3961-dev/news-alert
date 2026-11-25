@@ -56,7 +56,9 @@ NAVER_QUERIES = _naver_queries()
 PRIORITY_TERMS = ("중수청", "중대범죄수사청", "김지용", "임은정")   # 이 단어가 제목에 있으면 맨 위에
 SEEN_FILE = os.getenv("SEEN_FILE", "seen.json")    # 이미 보낸 기사 기록
 STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모음 대기 목록
-DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES") or "120")   # 공소청·형사사법 기사 모음 간격(분)
+DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES") or "120")   # 공소청·형사사법 기사 모음 간격(분) — DIGEST_TIMES=off일 때만
+# 공소청·형사사법 모음을 보내는 시각(쉼표 구분). off면 DIGEST_MINUTES 간격으로
+DIGEST_TIMES = (os.getenv("DIGEST_TIMES") or "09:00,13:00,18:00").strip()
 LEAD_TERMS = ("중수청", "중대범죄수사청")             # 본문 첫머리에 있으면 중수청 기사로 봄
 KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
@@ -642,7 +644,26 @@ def from_record(r: dict) -> dict:
     return r
 
 
-def format_messages(arts: list, now: dt.datetime, header: str) -> list:
+def digest_due(last, now: dt.datetime):
+    """모음 보낼 때인지 → (보낼지, 다음 발송 안내). 정해진 시각이 지났고 그 뒤로 아직 안 보냈으면 보냄"""
+    if DIGEST_TIMES.lower() == "off":
+        due = last is None or now - last >= dt.timedelta(minutes=DIGEST_MINUTES)
+        left = 0 if last is None else DIGEST_MINUTES - int((now - last).total_seconds() // 60)
+        return due, f"{left}분 뒤"
+    slots = []
+    for t in DIGEST_TIMES.split(","):
+        m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", t)
+        if m:
+            slots.append(now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0))
+    slots.sort()
+    for sl in slots:
+        if sl <= now and (last is None or last < sl) and now - sl < dt.timedelta(hours=12):
+            return True, ""
+    later = [sl for sl in slots if sl > now]
+    return False, (f"{later[0]:%H:%M}" if later else f"내일 {slots[0]:%H:%M}" if slots else "-")
+
+
+def format_messages(arts: list, now: dt.datetime, header: str, collapse: bool = False) -> list:
     e = html.escape
     blocks = []
     for n, g in enumerate(group_articles(arts), 1):
@@ -657,6 +678,15 @@ def format_messages(arts: list, now: dt.datetime, header: str) -> list:
             + (f"   ▸ {e(a['summary'])}\n" if a["summary"] else "")
             + f"   {link}"
         )
+    if collapse:                                   # 접힌 상태로(눌러서 펼치기) → 화면을 거의 차지하지 않음
+        msgs, cur = [], ""
+        for b in blocks:
+            if cur and len(cur) + len(b) > 3700:
+                msgs.append(cur)
+                cur = ""
+            cur += b + "\n"
+        msgs.append(cur)
+        return [(header if i == 0 else "") + f"<blockquote expandable>{m.strip()}</blockquote>" for i, m in enumerate(msgs)]
     msgs, cur = [], header
     for b in blocks:                               # 텔레그램 4096자 제한 대비 분할
         if len(cur) + len(b) > 3900:
@@ -667,11 +697,11 @@ def format_messages(arts: list, now: dt.datetime, header: str) -> list:
     return msgs
 
 
-def send_telegram(text: str) -> None:
+def send_telegram(text: str, silent: bool = False) -> None:
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     chat = TG_CHAT.strip()
     payload = {"chat_id": chat, "text": text, "parse_mode": "HTML",
-               "disable_web_page_preview": True}
+               "disable_web_page_preview": True, "disable_notification": silent}
     r = requests.post(url, json=payload, timeout=15)
     if r.ok:
         return
@@ -679,8 +709,8 @@ def send_telegram(text: str) -> None:
     print(f"[텔레그램 오류] {r.status_code}: {desc}", file=sys.stderr)
     if "parse" in desc.lower():                    # 서식 문제면 서식 없이 다시 보냄
         plain = html.unescape(re.sub(r'<a href="([^"]+)">[^<]*</a>', r"\1", text))
-        plain = re.sub(r"</?b>", "", plain)
-        r = requests.post(url, json={"chat_id": chat, "text": plain,
+        plain = re.sub(r"</?(?:b|blockquote[^>]*)>", "", plain)
+        r = requests.post(url, json={"chat_id": chat, "text": plain, "disable_notification": silent,
                                      "disable_web_page_preview": True}, timeout=15)
         if r.ok:
             return
@@ -803,6 +833,15 @@ def audio_cluster(groups: list) -> list:
     return out
 
 
+def closing_text(label: str, now: dt.datetime, more: int) -> str:
+    """맺음말(AI가 쓰지 않고 프로그램이 고정): 자세한 내용 안내 + 인사. 기관 응원 멘트는 넣지 않음(중립성)"""
+    where = "함께 보내 드린 카드뉴스와 텔레그램 알림의 기사 링크에서" if CARD_ON else "텔레그램 알림의 기사 링크에서"
+    pm = label == "오후" or (label not in ("아침", "오후") and now.hour >= 12)
+    greet = ("편안한 주말 보내십시오." if now.weekday() == 4 else "오늘 하루도 수고 많으셨습니다.") if pm else "오늘 하루도 힘내십시오."
+    return ((f"이 밖에도 중수청 관련 소식이 {more}가지 더 있습니다. " if more else "")
+            + f"자세한 내용은 {where} 확인하실 수 있습니다. 지금까지 중수청 언론보도 브리핑이었습니다. " + greet)
+
+
 def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime, more: int) -> str:
     """AI가 뉴스 앵커 원고로 정리. 실패하면 요약을 그대로 이어 붙임"""
     items = []
@@ -815,8 +854,7 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
                      + "\n" + _excerpts(g))
     wd = "월화수목금토일"[now.weekday()]
     intro = f"{now.month}월 {now.day}일 {wd}요일 {label}, 중수청 언론보도 브리핑입니다."
-    outro = (f"이 밖에도 중수청 관련 소식이 {more}가지 더 있으니, 텔레그램 알림에서 확인해 주십시오. " if more else "") + \
-        "지금까지 중수청 언론보도 브리핑이었습니다."
+    outro = closing_text(label, now, more)
     if ANTHROPIC_KEY:
         prompt = (
             "너는 아침·저녁 라디오 뉴스 앵커다. 아래 기사들로 3분 안팎의 라디오 뉴스 원고를 써라. "
@@ -1588,10 +1626,18 @@ def _transitions(intro: str, body: list, outro: str) -> str:
     return "\n\n".join([intro] + out + [outro])
 
 
-def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime):
+def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime, outro_fixed: str = ""):
     """대본 문장과 카드 문구를 함께 검증해 문제 문장을 뺌 → (고친 대본, 고친 카드, 뺀 목록, 검증 여부)
     문단의 첫 문장이 빠지거나 절반 이상이 빠지면 앞뒤가 끊겨 오해를 부를 수 있어 그 문단을 통째로 뺌"""
     intro, body, outro = _parse_script(raw_script)
+    if outro_fixed and "브리핑이었습니다" in outro:
+        outro = outro_fixed
+    elif outro_fixed:                             # AI가 맺음말을 빠뜨렸으면 마지막 문단은 본문으로 돌리고 맺음말을 붙임
+        if outro:
+            m = _MARK.match(outro)
+            t = _LEAD.sub("", _MARK.sub("", outro).strip(), count=1).strip() or outro
+            body.append((int(m.group(1)) if m else (body[-1][0] if body else 1), t))
+        outro = outro_fixed
     claims, where, i = [], {}, 0
     for pi, (k, p) in enumerate(body):
         for si, s_ in enumerate(_split_sents(p)):
@@ -1974,7 +2020,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
             AUDIO_ERR.append(f"카드 문구: {type(e).__name__}: {str(e)[:150]}")
             cards = [_card_fallback(g) for g in use[:CARD_MAX]] if CARD_ON else []
         # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
-        raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now)
+        lab = "오후" if label == "시험" and now.hour >= 12 else ("아침" if label == "시험" else label)
+        raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now, closing_text(lab, now, more))
         warn = "" if verified else "⚠️ <b>자동 검증 실패 · 공유 전 확인 필요</b>\n"
         state["audio_verify"] = (state.get("audio_verify", []) + [[now.isoformat(), verified, removed]])[-10:]
         script = speakable(raw_script)             # 글 원고(텔레그램에 보임): 원래 표기
@@ -2087,7 +2134,7 @@ def main() -> int:
                 continue                           # 방금 즉시 발송한 기사와 같은 내용이면 모음에서 제외
             state["pending"].append(to_record(a, now))
     last = dt.datetime.fromisoformat(state["last_digest"]) if state["last_digest"] else None
-    due = last is None or now - last >= dt.timedelta(minutes=DIGEST_MINUTES)
+    due, nxt = digest_due(last, now)
     if state["pending"] and due:
         items = []
         for p_ in state["pending"]:
@@ -2097,16 +2144,14 @@ def main() -> int:
             p_["group"] = None if len({x.get("found") for x in state["pending"]}) > 1 else p_.get("group")
             items.append(p_)
         since = last.strftime("%H:%M") if last and last.date() == now.date() else "직전"
-        head = (f"📚 <b>공소청·형사사법 모음</b>\n"
-                f"{since}~{now:%H:%M} 신규 {len(items)}건\n")
-        for msg in format_messages(items, now, head):
-            send_telegram(msg)
+        head = f"📚 <b>공소청·형사사법 모음</b> {since}~{now:%H:%M} · {len(items)}건 (눌러서 펼치기)\n"
+        for msg in format_messages(items, now, head, collapse=True):
+            send_telegram(msg, silent=True)            # 알림 소리 없이(중수청 기사만 울리게)
         print(f"공소청·형사사법 {len(items)}건 모음 발송")
         state["pending"] = []
         state["last_digest"] = now.isoformat()
     elif state["pending"]:
-        print(f"공소청·형사사법 {len(state['pending'])}건 대기 중 (모음 발송까지 "
-              f"{DIGEST_MINUTES - int((now - last).total_seconds() // 60)}분)")
+        print(f"공소청·형사사법 {len(state['pending'])}건 대기 중 (다음 모음 {nxt})")
     if not arts:
         print("새 기사 없음")
 
