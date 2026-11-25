@@ -2032,20 +2032,16 @@ def card_pages(cards: list, sources: list, when: str, when_short: str, label: st
         f"<div><div style='font-size:{ts - 9}px;font-weight:700;color:{col(c['tag'])}'>{i:02d} · {_esc(c['tag'])}</div>"
         f"<div style='font-size:{ts}px;font-weight:700;line-height:1.3;margin-top:2px'>{_esc(c['headline'])}</div></div></div>"
         for i, c in enumerate(cards, 1))
-    big = 80 if k <= 4 else 64
+    big = 84 if k <= 4 else 72
     pages = [wrap(
-        f"<div style='background:{_NAVY};color:#fff;padding:44px 80px {90 if k <= 4 else 74}px;position:relative;overflow:hidden'>{_deco()}"
-        f"<div style='display:flex;justify-content:space-between;align-items:center;font-size:28px;font-weight:700;position:relative'>"
-        f"{_plate(40, '12px 20px') or '<span>언론보도 모니터링</span>'}<span>1 / {total}</span></div>"
-        f"<div style='display:inline-block;margin-top:{32 if k <= 4 else 22}px;padding:8px 22px;border:2px solid rgba(255,255,255,.5);"
-        f"border-radius:999px;font-size:28px;position:relative'>{_esc(when)}</div>"
-        f"<div style='font-size:{big}px;font-weight:900;line-height:1.12;margin-top:18px;position:relative'>중수청<br>언론보도 브리핑</div>"
-        f"<div style='display:flex;gap:40px;margin-top:16px;font-size:28px;position:relative'>"
-        f"<div><b style='font-size:60px;font-weight:900'>{n_art}</b><span style='opacity:.8'> 건 기사</span></div>"
-        f"<div><b style='font-size:60px;font-weight:900'>{k + more}</b><span style='opacity:.8'> 개 사안</span></div>"
-        f"<div style='align-self:flex-end;opacity:.7;padding-bottom:8px'>{_esc(label)}</div></div></div>"
-        f"<div style='position:absolute;left:0;right:0;bottom:0;top:{600 if k <= 4 else 530}px;background:{_SOFT}'></div>"
-        f"<div style='position:absolute;top:{570 if k <= 4 else 510}px;bottom:150px;left:60px;right:60px;display:flex;flex-direction:column;gap:{tg}px'>{tiles}</div>"
+        f"<div style='background:{_NAVY};color:#fff;padding:44px 80px {80 if k <= 4 else 64}px;position:relative;overflow:hidden'>{_deco()}"
+        f"<div style='display:flex;align-items:center;gap:20px;font-size:28px;font-weight:700;position:relative'>"
+        f"{_plate(40, '12px 20px')}"
+        f"<div style='padding:10px 22px;border:2px solid rgba(255,255,255,.5);border-radius:999px;font-weight:500'>{_esc(when)}</div>"
+        f"<div style='margin-left:auto;opacity:.85'>1 / {total}</div></div>"
+        f"<div style='font-size:{big}px;font-weight:900;line-height:1.15;margin-top:{56 if k <= 4 else 40}px;position:relative'>언론보도<br>{_esc(label)}</div></div>"
+        f"<div style='position:absolute;left:0;right:0;bottom:0;top:300px;background:{_SOFT};z-index:-1'></div>"
+        f"<div style='position:absolute;top:{480 if k <= 4 else 420}px;bottom:150px;left:60px;right:60px;display:flex;flex-direction:column;gap:{tg}px'>{tiles}</div>"
         f"<div class='foot'><span>{CARD_DISCLAIMER}</span><span>카드 {total}장</span></div>")]
     # ── 사안 카드: 머리띠 + 제목 + (핵심 수치) + 요점 상자(연한 바탕을 고르게 채움) ──
     for i, (c, src) in enumerate(zip(cards, sources), 1):
