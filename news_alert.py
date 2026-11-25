@@ -59,6 +59,8 @@ STATE_FILE = os.getenv("STATE_FILE", "state.json") # 공소청·형사사법 모
 DIGEST_MINUTES = int(os.getenv("DIGEST_MINUTES") or "120")   # 공소청·형사사법 기사 모음 간격(분) — DIGEST_TIMES=off일 때만
 # 공소청·형사사법 모음을 보내는 시각(쉼표 구분). off면 DIGEST_MINUTES 간격으로
 DIGEST_TIMES = (os.getenv("DIGEST_TIMES") or "09:00,13:00,18:00").strip()
+# 모음 모양: list(기본, 기사마다 제목 한 줄·제목을 누르면 기사) / fold(요약까지 접어서) / full(예전처럼 요약 펼침)
+DIGEST_STYLE = (os.getenv("DIGEST_STYLE") or "list").strip().lower()
 LEAD_TERMS = ("중수청", "중대범죄수사청")             # 본문 첫머리에 있으면 중수청 기사로 봄
 KEEP_DAYS = 7                                      # 기록 보관 기간
 MAX_AGE_HOURS = 24                                 # 이보다 오래된 기사는 무시(최대)
@@ -663,6 +665,25 @@ def digest_due(last, now: dt.datetime):
     return False, (f"{later[0]:%H:%M}" if later else f"내일 {slots[0]:%H:%M}" if slots else "-")
 
 
+def format_list(arts: list, now: dt.datetime, header: str) -> list:
+    """한 사안 한 줄: 번호. 제목(누르면 기사) — 언론사 · 시각 (같은 내용 n건). 접기 없이 짧게"""
+    e = html.escape
+    lines = []
+    for n, g in enumerate(group_articles(arts), 1):
+        a = g[0]
+        extra = " · ".join(f"<a href=\"{e(x['url'], quote=True)}\">{e(x['press'])}</a>" for x in g[1:4])
+        lines.append(f"{n}. <a href=\"{e(a['url'], quote=True)}\">{e(a['title'])}</a>\n"
+                     f"    <i>{e(a['press'])} · {fmt_time(a['pub'], now)}</i>" + (f" · 같은 내용: {extra}" if extra else ""))
+    msgs, cur = [], header
+    for ln in lines:
+        if len(cur) + len(ln) > 3900:
+            msgs.append(cur)
+            cur = ""
+        cur += ln + "\n"
+    msgs.append(cur)
+    return msgs
+
+
 def format_messages(arts: list, now: dt.datetime, header: str, collapse: bool = False) -> list:
     e = html.escape
     blocks = []
@@ -709,7 +730,7 @@ def send_telegram(text: str, silent: bool = False) -> None:
     print(f"[텔레그램 오류] {r.status_code}: {desc}", file=sys.stderr)
     if "parse" in desc.lower():                    # 서식 문제면 서식 없이 다시 보냄
         plain = html.unescape(re.sub(r'<a href="([^"]+)">[^<]*</a>', r"\1", text))
-        plain = re.sub(r"</?(?:b|blockquote[^>]*)>", "", plain)
+        plain = re.sub(r"</?(?:b|i|blockquote[^>]*)>", "", plain)
         r = requests.post(url, json={"chat_id": chat, "text": plain, "disable_notification": silent,
                                      "disable_web_page_preview": True}, timeout=15)
         if r.ok:
@@ -2144,8 +2165,11 @@ def main() -> int:
             p_["group"] = None if len({x.get("found") for x in state["pending"]}) > 1 else p_.get("group")
             items.append(p_)
         since = last.strftime("%H:%M") if last and last.date() == now.date() else "직전"
-        head = f"📚 <b>공소청·형사사법 모음</b> {since}~{now:%H:%M} · {len(items)}건 (눌러서 펼치기)\n"
-        for msg in format_messages(items, now, head, collapse=True):
+        head = (f"📚 <b>공소청·형사사법 모음</b> {since}~{now:%H:%M} · {len(items)}건"
+                + (" (눌러서 펼치기)" if DIGEST_STYLE == "fold" else " · 제목을 누르면 기사") + "\n\n")
+        msgs = (format_list(items, now, head) if DIGEST_STYLE == "list" else
+                format_messages(items, now, head, collapse=(DIGEST_STYLE == "fold")))
+        for msg in msgs:
             send_telegram(msg, silent=True)            # 알림 소리 없이(중수청 기사만 울리게)
         print(f"공소청·형사사법 {len(items)}건 모음 발송")
         state["pending"] = []

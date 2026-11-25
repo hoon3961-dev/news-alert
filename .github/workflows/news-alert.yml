@@ -44,6 +44,7 @@ jobs:
           QUIET_HOURS: ${{ vars.QUIET_HOURS }}
           DIGEST_MINUTES: ${{ vars.DIGEST_MINUTES }}
           DIGEST_TIMES: ${{ vars.DIGEST_TIMES }}
+          DIGEST_STYLE: ${{ vars.DIGEST_STYLE }}
           EXCLUDE_PRESS: ${{ vars.EXCLUDE_PRESS }}
           EXCLUDE_WORDS: ${{ vars.EXCLUDE_WORDS }}
           QUERIES: ${{ vars.QUERIES }}
