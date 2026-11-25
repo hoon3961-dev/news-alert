@@ -143,7 +143,7 @@ CONTEXT_TERMS = ("중수청", "중대범죄수사청", "공소청", "검찰", "�
                  "경찰", "특검", "형사", "법무", "기소", "사법")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 VERIFY_ON = (os.getenv("VERIFY") or "on").strip().lower() != "off"
-VERIFY_MODEL = (os.getenv("VERIFY_MODEL") or "").strip() or CLAUDE_MODEL
+VERIFY_MODEL = (os.getenv("VERIFY_MODEL") or "").strip() or "claude-sonnet-5-5"   # 검증만 상위 모델(생성은 CLAUDE_MODEL=Haiku)
 
 # ── 음성 브리핑(중수청 기사만, 평일 아침·오후) ──────────────────
 # AUDIO=off 로 끄기. AUDIO_TIMES: 만드는 시각(쉼표 구분). 직전 브리핑 이후 보낸 중수청 기사를 담음
