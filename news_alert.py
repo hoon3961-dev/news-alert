@@ -1801,6 +1801,17 @@ def _src_text(g: list) -> str:
     return "\n".join(f"{x['title']} {x.get('summary') or ''}" for x in g)
 
 
+_HANJA = {"李": "이", "尹": "윤", "文": "문", "朴": "박", "與": "여당", "野": "야당", "檢": "검찰", "警": "경찰",
+          "靑": "청와대", "軍": "군", "美": "미국", "中": "중국", "日": "일본", "北": "북한", "韓": "한국", "英": "영국",
+          "故": "고", "前": "전", "現": "현", "新": "신", "反": "반", "親": "친", "對": "대"}
+
+
+def no_hanja(t: str) -> str:
+    """카드 글꼴(Pretendard)에 한자가 없어 네모(▤)로 깨지므로 흔한 한자 약칭을 한글로, 나머지 한자는 지움"""
+    t = re.sub(r"[\u4e00-\u9fff]", lambda m: _HANJA.get(m.group(0), ""), t)
+    return re.sub(r"\s{2,}", " ", t).strip()
+
+
 def _cut(t: str, lim: int) -> str:
     return t if len(t) <= lim else (t[:lim].rsplit(" ", 1)[0] if " " in t[:lim] else t[:lim]) + "…"
 
@@ -1841,7 +1852,7 @@ def card_copy(groups: list, now: dt.datetime) -> list:
             "- 요약에 없는 사실·숫자·기관명·직함을 쓰지 않는다. 기관명은 요약에 적힌 그대로 쓴다(예: '서울중수청'을 '서울중앙지검'으로 바꾸지 않음).\n"
             "- 숫자는 요약에 있는 값 그대로 쓴다(단위 바꾸기·반올림 금지).\n"
             "- 평가·전망·의견 표현('논란 확산', '파장', '비상', '난항 불가피' 등 요약에 없는 해석)을 쓰지 않는다.\n"
-            "- 언론사 이름은 쓰지 않는다(출처는 따로 붙임).\n"
+            "- 언론사 이름은 쓰지 않는다(출처는 따로 붙임). 한자 약칭(李·尹·與·野·檢 등)은 한글로 풀어 쓴다(야당, 검찰 등).\n"
             f"- 오늘은 {now:%Y-%m-%d}. 기본 사실:\n{FACTS}\n- '신설될·새로 생기는' 같은 미래 표현 금지. 요약과 본문이 다르면 본문을 따른다.\n"
             "- 요약에 없는 인과·시간 관계('~에 따라', '같은 날')를 만들지 않는다.\n\n" + "\n\n".join(items))
         prompt = base
@@ -1929,19 +1940,23 @@ def _fit(text: str, sizes: list) -> int:
 
 
 def card_pages(cards: list, sources: list, when: str, when_short: str, label: str, n_art: int, more: int) -> list:
+    cards = [dict(c, headline=no_hanja(c["headline"]), points=[no_hanja(p) for p in c["points"]]) for c in cards]
     total = len(cards) + 2
     wrap = lambda body: f"<!DOCTYPE html><html><head><meta charset='utf-8'><style>{_CARD_CSS}</style></head><body>{body}</body></html>"
-    hs = 40 if len(cards) <= 4 else (34 if len(cards) <= 6 else 30)
+    k = len(cards)
+    hs, pad = (38, 24) if k <= 4 else (32, 14) if k <= 6 else (28, 9)
     rows = "".join(
-        f"<div class='row' style='padding:{26 if len(cards) <= 4 else 16}px 0'>"
-        f"<div style='font-size:{hs + 4}px;font-weight:900;color:#2E5C8A;min-width:70px'>{i:02d}</div>"
-        f"<div><div style='margin-bottom:10px'>{_tag(c['tag'])}</div>"
-        f"<div style='font-size:{hs}px;font-weight:700;line-height:1.35'>{_esc(c['headline'])}</div></div></div>"
+        f"<div class='row' style='padding:{pad}px 0;align-items:center'>"
+        f"<div style='font-size:{hs + 4}px;font-weight:900;color:#2E5C8A;min-width:64px'>{i:02d}</div>"
+        f"<div style='font-size:{hs}px;font-weight:700;line-height:1.3'>"
+        f"<span class='tag' style='background:{CARD_TAGS.get(c['tag'], '#5B6B7F')};font-size:{hs - 10}px;padding:4px 14px;"
+        f"vertical-align:3px;margin-right:12px'>{_esc(c['tag'])}</span>{_esc(c['headline'])}</div></div>"
         for i, c in enumerate(cards, 1))
+    title_px, gap = (84, 56) if k <= 4 else (68, 36)
     pages = [wrap(
         f"<div class='band'><div class='brand'><span style='opacity:.85'>언론보도 모니터링</span><span>1 / {total}</span></div>"
-        f"<div style='font-size:34px;font-weight:500;opacity:.8;margin-top:56px'>{_esc(when)}</div>"
-        f"<div style='font-size:84px;font-weight:900;line-height:1.15;margin-top:18px'>중수청<br>언론보도 브리핑</div>"
+        f"<div style='font-size:34px;font-weight:500;opacity:.8;margin-top:{gap}px'>{_esc(when)}</div>"
+        f"<div style='font-size:{title_px}px;font-weight:900;line-height:1.15;margin-top:18px'>중수청<br>언론보도 브리핑</div>"
         f"<div style='font-size:32px;margin-top:28px;opacity:.85'>{_esc(label)} · 기사 {n_art}건 · 사안 {len(cards) + more}개</div></div>"
         f"<div style='padding:12px 80px 0'>{rows}</div>"
         f"<div class='foot'><span>{CARD_DISCLAIMER}</span></div>")]
@@ -2032,17 +2047,36 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
     pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
                        f"{label} 브리핑", n_art, more)
     paths = render_cards(pages, os.path.join(os.getenv("RUNNER_TEMP") or ".", f"cards_{now:%m%d_%H%M}"))
-    lines = []
-    for i, (c, g) in enumerate(zip(cards, show), 1):
-        links = " · ".join(f"<a href=\"{html.escape(x['url'], quote=True)}\">{html.escape(x['press'])}</a>" for x in g[:3])
-        lines.append(f"{i}. {html.escape(c['headline'])} — {links}")
-    top = warn + f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용)\n"
-    caption = top + "\n".join(lines)
-    while len(caption) > 1000 and lines:          # 텔레그램 설명란 1,024자 제한: 뒤 사안부터 줄임
-        lines.pop()
-        caption = top + "\n".join(lines) + "\n…"
+    caption = (warn + f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용) · 사안 {len(cards)}개\n"
+               "사안별 기사 링크는 아래 메시지에 모두 있습니다.")
     send_cards(paths, caption, reply_to)
-    print(f"카드뉴스({label}) 발송: {len(paths)}장")
+    # 설명란은 1,024자 제한이라 링크가 잘렸음 → 모든 기사 링크를 따로 보냄(4,096자씩 나눔)
+    e = html.escape
+    blocks = []
+    for i, (c, g) in enumerate(zip(cards, show), 1):
+        seen_u, links = set(), []
+        for x in g:
+            if x["url"] in seen_u:
+                continue
+            seen_u.add(x["url"])
+            links.append(f"<a href=\"{e(x['url'], quote=True)}\">{e(x['press'])}</a>")
+        blocks.append(f"<b>{i}. {e(c['headline'])}</b>\n   " + " · ".join(links))
+    msgs, cur = [], f"🔗 <b>카드뉴스 기사 링크</b> ({label})\n\n"
+    for b in blocks:
+        if len(cur) + len(b) > 3900:
+            msgs.append(cur)
+            cur = ""
+        cur += b + "\n\n"
+    msgs.append(cur)
+    for m in msgs:
+        payload = {"chat_id": TG_CHAT.strip(), "text": m.strip(), "parse_mode": "HTML",
+                   "disable_web_page_preview": True, "disable_notification": True}
+        if reply_to:
+            payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json=payload, timeout=30)
+        if not r.ok:
+            print(f"[카드 링크 발송 오류] {r.status_code}: {r.text[:150]}", file=sys.stderr)
+    print(f"카드뉴스({label}) 발송: {len(paths)}장, 링크 {sum(len(g) for g in show)}건")
 
 
 def audio_briefing(state: dict, now: dt.datetime) -> None:
