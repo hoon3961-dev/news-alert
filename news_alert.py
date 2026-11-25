@@ -1949,23 +1949,46 @@ _CARD_CSS = """
 html,body{width:1080px;height:1350px}
 body{background:#fff;color:#1B2A3D;font-family:'Pretendard','Noto Sans CJK KR','Noto Sans KR',sans-serif;
  word-break:keep-all;overflow-wrap:break-word;position:relative;overflow:hidden;letter-spacing:-0.5px}
-.band{background:#1F3A5F;color:#fff;padding:56px 80px 64px}
-.brand{font-size:30px;font-weight:700;display:flex;justify-content:space-between}
-.foot{position:absolute;left:80px;right:80px;bottom:56px;border-top:2px solid #D9E0E8;padding-top:24px;
- font-size:24px;color:#8592A3;display:flex;justify-content:space-between;gap:24px}
-.tag{display:inline-block;font-size:28px;font-weight:700;padding:8px 22px;border-radius:999px;color:#fff}
-.row{display:flex;gap:28px;align-items:flex-start;padding:26px 0;border-bottom:2px solid #D9E0E8}
-.pt{display:flex;gap:24px;padding:30px 0;border-bottom:2px solid #D9E0E8}
-.dot{width:14px;height:14px;border-radius:50%;background:#2E5C8A;margin-top:22px;flex:none}
+.foot{position:absolute;left:80px;right:80px;bottom:48px;border-top:2px solid #D9E0E8;padding-top:22px;
+ font-size:23px;color:#8592A3;display:flex;justify-content:space-between;gap:24px}
+.ic{display:flex;align-items:center;justify-content:center;flex:none}
 """
+_NAVY, _NAVY2, _SOFT, _LINE, _SUB = "#1F3A5F", "#2E5C8A", "#EEF3F9", "#D9E0E8", "#5B6B7F"
+# 분류별 선 아이콘(직접 그린 단순 도형 — 저작권 문제 없음)
+_ICON = {
+    "수사": '<circle cx="26" cy="26" r="15"/><line x1="37" y1="37" x2="52" y2="52"/>',
+    "인사": '<circle cx="32" cy="20" r="10"/><path d="M12 54c2-12 10-18 20-18s18 6 20 18"/>',
+    "국회·예산": '<path d="M8 22 32 8l24 14"/><line x1="8" y1="54" x2="56" y2="54"/><line x1="14" y1="26" x2="14" y2="48"/>'
+                '<line x1="26" y1="26" x2="26" y2="48"/><line x1="38" y1="26" x2="38" y2="48"/><line x1="50" y1="26" x2="50" y2="48"/>',
+    "제도·협의": '<rect x="12" y="6" width="40" height="52" rx="4"/><line x1="20" y1="20" x2="44" y2="20"/>'
+                '<line x1="20" y1="30" x2="44" y2="30"/><line x1="20" y1="40" x2="36" y2="40"/>',
+    "조직·인력": '<rect x="24" y="6" width="16" height="12" rx="2"/><rect x="6" y="42" width="16" height="12" rx="2"/>'
+                '<rect x="42" y="42" width="16" height="12" rx="2"/><path d="M32 18v12M14 42V30h36v12"/>',
+    "기타": '<rect x="8" y="10" width="48" height="44" rx="4"/><line x1="16" y1="22" x2="48" y2="22"/>'
+           '<line x1="16" y1="32" x2="48" y2="32"/><line x1="16" y1="42" x2="38" y2="42"/>',
+    "링크": '<path d="M27 37a10 10 0 0 0 14 0l9-9a10 10 0 0 0-14-14l-4 4"/><path d="M37 27a10 10 0 0 0-14 0l-9 9a10 10 0 0 0 14 14l4-4"/>',
+}
+
+
+def _icon(tag: str, size: int, color: str, sw: float = 4) -> str:
+    return (f"<svg width='{size}' height='{size}' viewBox='0 0 64 64' fill='none' stroke='{color}' stroke-width='{sw}' "
+            f"stroke-linecap='round' stroke-linejoin='round'>{_ICON.get(tag, _ICON['기타'])}</svg>")
+
+
+def _key_figure(headline: str, points: list):
+    """검증된 요점 문장에 이미 있는 숫자만 사용(새로 계산하거나 만들지 않음).
+    'N건 중 M건'처럼 비율이 문장에 그대로 있을 때만 막대로 보여 줌(맥락 없는 숫자는 생략)."""
+    for p in points:
+        m = re.search(r"(\d[\d,]*)\s*건\s*중\s*(?:[^\d]{0,12})?(\d[\d,]*)\s*건", p)
+        if m:
+            a, b = int(m.group(1).replace(",", "")), int(m.group(2).replace(",", ""))
+            if a and b <= a:
+                return {"big": m.group(2), "unit": "건", "sub": f"전체 {m.group(1)}건 중", "ratio": b / a}
+    return None
 
 
 def _esc(t) -> str:
     return html.escape(str(t))
-
-
-def _tag(tag: str) -> str:
-    return f"<span class='tag' style='background:{CARD_TAGS.get(tag, '#5B6B7F')}'>{_esc(tag)}</span>"
 
 
 def _fit(text: str, sizes: list) -> int:
@@ -1976,47 +1999,86 @@ def _fit(text: str, sizes: list) -> int:
     return sizes[-1][1]
 
 
+def _deco() -> str:
+    return ("<div style='position:absolute;right:-70px;top:-60px;width:440px;height:440px;border-radius:50%;background:rgba(255,255,255,.06)'></div>"
+            "<div style='position:absolute;right:110px;top:170px;width:220px;height:220px;border-radius:50%;background:rgba(79,134,198,.22)'></div>")
+
+
 def card_pages(cards: list, sources: list, when: str, when_short: str, label: str, n_art: int, more: int) -> list:
-    cards = [dict(c, headline=no_hanja(c["headline"]), points=[no_hanja(p) for p in c["points"]]) for c in cards]
+    cards = [dict(c, headline=no_hanja(c["headline"]), points=[no_hanja(p) for p in c["points"]][:3]) for c in cards]
     total = len(cards) + 2
     wrap = lambda body: f"<!DOCTYPE html><html><head><meta charset='utf-8'><style>{_CARD_CSS}</style></head><body>{body}</body></html>"
+    col = lambda t: CARD_TAGS.get(t, _SUB)
     k = len(cards)
-    hs, pad = (38, 24) if k <= 4 else (32, 14) if k <= 6 else (28, 9)
-    rows = "".join(
-        f"<div class='row' style='padding:{pad}px 0;align-items:center'>"
-        f"<div style='font-size:{hs + 4}px;font-weight:900;color:#2E5C8A;min-width:64px'>{i:02d}</div>"
-        f"<div style='font-size:{hs}px;font-weight:700;line-height:1.3'>"
-        f"<span class='tag' style='background:{CARD_TAGS.get(c['tag'], '#5B6B7F')};font-size:{hs - 10}px;padding:4px 14px;"
-        f"vertical-align:3px;margin-right:12px'>{_esc(c['tag'])}</span>{_esc(c['headline'])}</div></div>"
+    # ── 표지: 남색 머리 + 사안 타일(아이콘·분류·제목) ──
+    ts, ti, tg = (34, 70, 20) if k <= 4 else (31, 60, 16) if k <= 6 else (26, 48, 10)
+    tiles = "".join(
+        f"<div style='flex:1;max-height:{190 if k <= 4 else 150}px;display:flex;gap:24px;align-items:center;padding:8px 28px;background:#fff;border-radius:20px;border:2px solid {_LINE}'>"
+        f"<div class='ic' style='width:{ti}px;height:{ti}px;border-radius:16px;background:{col(c['tag'])}'>{_icon(c['tag'], int(ti * .6), '#fff')}</div>"
+        f"<div><div style='font-size:{ts - 9}px;font-weight:700;color:{col(c['tag'])}'>{i:02d} · {_esc(c['tag'])}</div>"
+        f"<div style='font-size:{ts}px;font-weight:700;line-height:1.3;margin-top:2px'>{_esc(c['headline'])}</div></div></div>"
         for i, c in enumerate(cards, 1))
-    title_px, gap = (84, 56) if k <= 4 else (68, 36)
+    big = 80 if k <= 4 else 68
     pages = [wrap(
-        f"<div class='band'><div class='brand'><span style='opacity:.85'>언론보도 모니터링</span><span>1 / {total}</span></div>"
-        f"<div style='font-size:34px;font-weight:500;opacity:.8;margin-top:{gap}px'>{_esc(when)}</div>"
-        f"<div style='font-size:{title_px}px;font-weight:900;line-height:1.15;margin-top:18px'>중수청<br>언론보도 브리핑</div>"
-        f"<div style='font-size:32px;margin-top:28px;opacity:.85'>{_esc(label)} · 기사 {n_art}건 · 사안 {len(cards) + more}개</div></div>"
-        f"<div style='padding:12px 80px 0'>{rows}</div>"
-        f"<div class='foot'><span>{CARD_DISCLAIMER}</span></div>")]
+        f"<div style='background:{_NAVY};color:#fff;padding:56px 80px {90 if k <= 4 else 74}px;position:relative;overflow:hidden'>{_deco()}"
+        f"<div style='display:flex;justify-content:space-between;font-size:28px;font-weight:700;opacity:.85;position:relative'>"
+        f"<span>언론보도 모니터링</span><span>1 / {total}</span></div>"
+        f"<div style='display:inline-block;margin-top:{40 if k <= 4 else 28}px;padding:10px 22px;border:2px solid rgba(255,255,255,.5);"
+        f"border-radius:999px;font-size:28px;position:relative'>{_esc(when)}</div>"
+        f"<div style='font-size:{big}px;font-weight:900;line-height:1.12;margin-top:22px;position:relative'>중수청<br>언론보도 브리핑</div>"
+        f"<div style='display:flex;gap:40px;margin-top:26px;font-size:28px;position:relative'>"
+        f"<div><b style='font-size:60px;font-weight:900'>{n_art}</b><span style='opacity:.8'> 건 기사</span></div>"
+        f"<div><b style='font-size:60px;font-weight:900'>{k + more}</b><span style='opacity:.8'> 개 사안</span></div>"
+        f"<div style='align-self:flex-end;opacity:.7;padding-bottom:8px'>{_esc(label)}</div></div></div>"
+        f"<div style='position:absolute;left:0;right:0;bottom:0;top:{560 if k <= 4 else 500}px;background:{_SOFT}'></div>"
+        f"<div style='position:absolute;top:{510 if k <= 4 else 450}px;bottom:150px;left:60px;right:60px;display:flex;flex-direction:column;gap:{tg}px'>{tiles}</div>"
+        f"<div class='foot'><span>{CARD_DISCLAIMER}</span><span>카드 {total}장</span></div>")]
+    # ── 사안 카드: 머리띠 + 제목 + (핵심 수치) + 요점 상자(연한 바탕을 고르게 채움) ──
     for i, (c, src) in enumerate(zip(cards, sources), 1):
-        ps = _fit(" ".join(c["points"][:3]), [(110, 40), (140, 36), (999, 32)])
-        pts = "".join(f"<div class='pt'><div class='dot'></div><div style='font-size:{ps}px;line-height:1.5;font-weight:500'>{_esc(p)}</div></div>"
-                      for p in c["points"][:3])
+        cc, pts = col(c["tag"]), c["points"]
+        kf = _key_figure(c["headline"], pts)
+        ps = _fit(" ".join(pts), [(70, 42), (110, 39), (150, 35), (999, 32)])
+        hs = _fit(c["headline"], [(22, 62), (32, 56), (999, 48)])
+        kbox = ""
+        if kf:
+            bar = (f"<div style='height:18px;background:#D6E2F0;border-radius:9px;margin-top:14px;overflow:hidden'>"
+                   f"<div style='height:100%;width:{max(kf['ratio'], .02) * 100:.1f}%;background:{cc};border-radius:9px'></div></div>"
+                   if kf["ratio"] is not None else "")
+            kbox = (f"<div style='display:flex;gap:34px;align-items:center;margin-top:34px;padding:26px 36px;border:3px solid {_SOFT};border-radius:24px'>"
+                    f"<div style='white-space:nowrap;color:{cc}'><b style='font-size:84px;font-weight:900;line-height:1'>{_esc(kf['big'])}</b>"
+                    f"<span style='font-size:34px;font-weight:800;margin-left:4px'>{_esc(kf['unit'])}</span></div>"
+                    f"<div style='flex:1'><div style='font-size:26px;color:{_SUB};font-weight:600'>핵심 수치"
+                    f"{(' · ' + _esc(kf['sub'])) if kf['sub'] else ''}</div>{bar}</div></div>")
+        rows = "".join(
+            f"<div style='display:flex;gap:24px;align-items:flex-start;background:#fff;border-radius:22px;padding:30px 34px;"
+            f"box-shadow:0 3px 0 {_LINE}'>"
+            f"<div class='ic' style='width:50px;height:50px;border-radius:50%;background:{cc};color:#fff;font-size:26px;font-weight:800;"
+            f"margin-top:{max(ps * .75 - 25, 0):.0f}px'>{n}</div>"
+            f"<div style='font-size:{ps}px;line-height:1.5;font-weight:600'>{_esc(p)}</div></div>"
+            for n, p in enumerate(pts, 1))
         pages.append(wrap(
-            f"<div style='padding:56px 80px 0'><div class='brand' style='color:#5B6B7F'>"
-            f"<span>중수청 언론보도 · {_esc(when_short)}</span><span>{i + 1} / {total}</span></div></div>"
-            f"<div style='padding:110px 80px 0'><div style='display:flex;align-items:center;gap:26px'>"
-            f"<span style='font-size:72px;font-weight:900;color:#2E5C8A;line-height:1'>{i:02d}</span>{_tag(c['tag'])}</div>"
-            f"<div style='font-size:{_fit(c['headline'], [(26, 62), (36, 54), (999, 46)])}px;font-weight:900;line-height:1.3;margin-top:30px'>{_esc(c['headline'])}</div>"
-            f"<div style='height:6px;width:120px;background:#2E5C8A;margin:44px 0 16px'></div>{pts}</div>"
+            f"<div style='height:1350px;display:flex;flex-direction:column'>"
+            f"<div style='background:{_NAVY};color:#fff;padding:40px 80px 36px;display:flex;align-items:center;gap:26px'>"
+            f"<div class='ic' style='width:80px;height:80px;border-radius:22px;background:rgba(255,255,255,.12)'>{_icon(c['tag'], 50, '#fff')}</div>"
+            f"<div style='flex:1'><div style='font-size:25px;opacity:.75'>중수청 언론보도 · {_esc(when_short)}</div>"
+            f"<div style='font-size:34px;font-weight:800;margin-top:4px'>{i:02d} &nbsp;{_esc(c['tag'])}</div></div>"
+            f"<div style='font-size:28px;font-weight:700;opacity:.85'>{i + 1} / {total}</div></div>"
+            f"<div style='height:10px;background:{cc}'></div>"
+            f"<div style='padding:50px 80px 44px'><div style='font-size:{hs}px;font-weight:900;line-height:1.28'>{_esc(c['headline'])}</div>{kbox}</div>"
+            f"<div style='flex:1;background:{_SOFT};position:relative;overflow:hidden;padding:44px 80px 150px'>"
+            f"<div style='position:absolute;right:-50px;bottom:90px;opacity:.07'>{_icon(c['tag'], 460, _NAVY, 3)}</div>"
+            f"<div style='position:relative;height:100%;display:flex;flex-direction:column;justify-content:center;gap:28px'>{rows}</div></div></div>"
             f"<div class='foot'><span>출처: {_esc(src)}</span><span>{CARD_DISCLAIMER}</span></div>"))
+    # ── 마무리 ──
     extra = f"이 밖에 중수청 관련 사안 {more}개는<br>텔레그램 알림에서 확인하세요.<br><br>" if more else ""
     pages.append(wrap(
-        f"<div class='band' style='height:1350px;display:flex;flex-direction:column;justify-content:center'>"
-        f"<div class='brand' style='position:absolute;top:56px;left:80px;right:80px'><span style='opacity:.85'>언론보도 모니터링</span>"
-        f"<span>{total} / {total}</span></div>"
-        f"<div style='font-size:60px;font-weight:900;line-height:1.35'>기사 원문은<br>텔레그램 메시지의<br>"
+        f"<div style='background:{_NAVY};color:#fff;height:1350px;padding:0 80px;display:flex;flex-direction:column;justify-content:center;position:relative;overflow:hidden'>{_deco()}"
+        f"<div style='position:absolute;top:56px;left:80px;right:80px;display:flex;justify-content:space-between;font-size:28px;font-weight:700;opacity:.85'>"
+        f"<span>언론보도 모니터링</span><span>{total} / {total}</span></div>"
+        f"<div class='ic' style='width:120px;height:120px;border-radius:30px;background:rgba(255,255,255,.12);position:relative'>{_icon('링크', 72, '#fff')}</div>"
+        f"<div style='font-size:60px;font-weight:900;line-height:1.35;margin-top:44px;position:relative'>기사 원문은<br>텔레그램 메시지의<br>"
         f"<span style='color:#9CC3EA'>링크</span>에서 확인하세요</div>"
-        f"<div style='font-size:32px;line-height:1.7;margin-top:56px;opacity:.85'>{extra}"
+        f"<div style='font-size:31px;line-height:1.7;margin-top:52px;opacity:.85;position:relative;border-top:2px solid rgba(255,255,255,.25);padding-top:40px'>{extra}"
         f"이 카드는 언론 보도 내용을 요약한 것으로<br>사실관계가 확인되지 않은 내용이 포함될 수 있습니다.<br>"
         f"외부 배포를 금합니다.</div></div>"))
     return pages
