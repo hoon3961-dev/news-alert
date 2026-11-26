@@ -1023,17 +1023,30 @@ def extract_facts(groups: list, now: dt.datetime) -> tuple:
         blocks.append(f"[사안 {n}] {when}\n" + "\n".join(f"<기사> 제목: {x['title']}\n본문: {x['body'][:2500]}" for _, x in arts))
     if not blocks:
         return {}, title_only
-    prompt = (
-        "아래 기사 본문에서 사안마다 핵심 사실을 중요한 순서로 최대 6개 뽑아라. 글을 쓰는 것이 아니라 사실을 옮겨 적는 일이다.\n"
-        "[형식] JSON만 출력: {\"1\": [{\"id\": \"1a\", \"text\": \"...\", \"quote\": \"...\"}], \"2\": [...]}\n"
+    head = (
+        "아래 기사 본문에서 핵심 사실을 중요한 순서로 최대 5개 뽑아라. 글을 쓰는 것이 아니라 사실을 옮겨 적는 일이다.\n"
+        "[형식] JSON만 출력: {\"N\": [{\"id\": \"Na\", \"text\": \"...\", \"quote\": \"...\"}]} (N은 사안 번호, id는 Na·Nb…)\n"
         "- text: 사실 하나를 짧은 평서문으로. 숫자·기관명·직함·이름은 본문 표기 그대로(단위·이름을 바꾸거나 늘리지 않음).\n"
-        "- quote: 그 사실의 근거가 된 본문 문장을 한 글자도 바꾸지 않고 그대로 옮긴다(30~200자). 프로그램이 본문과 글자 대조한다.\n"
+        "- quote: 그 사실의 근거가 된 본문 문장을 한 글자도 바꾸지 않고 그대로 옮긴다(30~150자). 프로그램이 본문과 글자 대조한다.\n"
         "- 기자의 해설·평가·전망('~할 전망', '과제로 떠올랐다', '우려가 나온다')은 사실로 뽑지 않는다. "
         "누가 한 말이면 '○○는 ~라고 말함'처럼 말한 사람을 밝혀 뽑는다.\n"
         "- 기사 속 '오늘·어제·지난달' 같은 말은 기사 작성일 기준이다. text에는 날짜로 바꿔 적는다(작성일은 사안 머리에 있음).\n"
         "- 제목의 비유·수사적 표현을 사실로 바꾸지 않는다. 본문에 없는 인과관계를 만들지 않는다.\n"
-        f"- 오늘은 {now:%Y-%m-%d}. 기본 사실(본문이 이와 다르게 읽히면 그 사실은 뽑지 않는다):\n{FACTS}\n\n" + "\n\n".join(blocks))
-    data = _json_obj(ask_claude(prompt, 6000, model=WRITE_MODEL))
+        f"- 오늘은 {now:%Y-%m-%d}. 기본 사실(본문이 이와 다르게 읽히면 그 사실은 뽑지 않는다):\n{FACTS}\n\n")
+    # 사안마다 따로 물음(한 번에 물으면 답이 길어 잘리고 시간이 초과됨 — 11.27. 시험) → 동시에 4개씩
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(block):
+        try:
+            return _json_obj(ask_claude(head + block, 8000, timeout=240, model=WRITE_MODEL))
+        except Exception as e:
+            V2_LOG.append(f"사실 뽑기 실패: {block[:12]} {type(e).__name__}")
+            return {}
+    data = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for d in ex.map(one, blocks):
+            if isinstance(d, dict):
+                data.update(d)
     out = {}
     for k, lst in (data.items() if isinstance(data, dict) else []):
         try:
@@ -1095,7 +1108,7 @@ def compose_v2(facts: dict, groups: list, label: str, now: dt.datetime, more: in
         "누가 한 말은 '○○는 ~라고 말했습니다'로.\n"
         "- 언론사 이름, 괄호, 따옴표, 기호, 영문 약어, 한자 약칭을 쓰지 않는다. 같은 내용을 다른 사안에서 되풀이하지 않는다.\n"
         f"- 오늘은 {now:%Y-%m-%d}. 기본 사실:\n{FACTS}\n\n[확인된 사실]\n{flist}")
-    data = _json_obj(ask_claude(prompt, 6000, model=WRITE_MODEL))
+    data = _json_obj(ask_claude(prompt, 12000, timeout=300, model=WRITE_MODEL))
     by_id = {f["id"]: (n, f) for n in order for f in facts[n]}
 
     def ok(item, sec_n, where):
