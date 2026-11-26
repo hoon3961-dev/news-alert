@@ -112,6 +112,10 @@ ALLOWED_PRESS = {
     "제민일보": "jemin.com", "산경일보": "", "동방일보": "", "대한일보": "",
     # 11.12. 스크랩 대조 후 추가(도메인 미확인은 이름만 등록 — 구글 표기와 일치해야 함)
     "울산신문": "ulsanpress.net", "전라일보": "jeollailbo.com", "광주타임스": "", "JCN울산중앙방송": "", "알쓸신문": "",
+    # 11.26. 스크랩(11.13.~11.26.) 대조 후 추가
+    "이투데이": "etoday.co.kr", "경기신문": "kgnews.co.kr", "신아일보": "shinailbo.co.kr", "더퍼블릭": "thepublic.kr",
+    "투데이코리아": "todaykorea.co.kr", "대구MBC": "dgmbc.com", "전국매일": "jeonmae.co.kr", "경기매일": "kgmaeil.net",
+    "삼다일보": "", "서울일보": "", "드림투데이": "",
 }
 # 이름이 다르게 표시되는 경우(구글 뉴스 표기)
 PRESS_ALIASES = {"서울Pn": "서울신문", "JoongAng": "중앙일보", "Yonhap": "연합뉴스", "TV조선뉴스": "TV조선",
@@ -567,7 +571,7 @@ def summarize(arts: list, _again: bool = False) -> None:
                 arts[i]["why"] = "AI 관련 없음"
             arts[i]["relevant"] = arts[i]["relevant"] and bool(d.get("relevant", True))
             arts[i]["dup"] = bool(d.get("dup", False)) and not is_scoop(arts[i]["title"])   # [단독]은 중복 판단 제외
-            if d.get("old"):
+            if d.get("old") and not fresh_date(arts[i]):
                 arts[i]["relevant"] = False
                 arts[i]["old"] = True
                 arts[i]["why"] = "AI 지난 기사"
@@ -575,6 +579,17 @@ def summarize(arts: list, _again: bool = False) -> None:
                 arts[i]["priority"] = bool(d["jsc"]) or any(t in arts[i]["title"] for t in PRIORITY_TERMS)
             if d.get("group") is not None:
                 arts[i]["group"] = str(d["group"])
+
+
+def fresh_date(a: dict) -> bool:
+    """날짜 근거로 '최근 기사'임이 확실한지. AI가 지난 기사(old)로 잘못 보는 일이 잦아(11.13.~26. 스크랩 대조:
+    '김병기 고발 사건 중수청 이관', '노재헌 소환 통보' 등 당일 기사가 빠짐) 날짜가 확실하면 AI의 old 판단을 따르지 않음"""
+    today = dt.datetime.now(KST).date()
+    if a["key"].startswith("nv:") and a.get("pub") and a["pub"].date() >= today - dt.timedelta(days=2):
+        return True                                # 네이버는 작성 시각이 정확함
+    pd_ = a.get("page_date", "")
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", pd_ or "")) and not pd_.endswith("-01") \
+        and dt.date.fromisoformat(pd_) >= today - dt.timedelta(days=2)
 
 
 def strict_filter(arts: list) -> None:
