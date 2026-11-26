@@ -149,7 +149,7 @@ def publish(path):
     run("git", "add", rel)
     run("git", "commit", "-q", "-m", f"브리핑 원고 {os.path.basename(rel)} [skip ci]")
     for _ in range(3):
-        if subprocess.run(["git", "pull", "-q", "--rebase", "origin", "main"], cwd=root).returncode == 0 and \
+        if subprocess.run(["git", "pull", "-q", "--rebase", "--autostash", "origin", "main"], cwd=root).returncode == 0 and \
                 subprocess.run(["git", "push", "-q", "origin", "HEAD:main"], cwd=root).returncode == 0:
             break
     else:
