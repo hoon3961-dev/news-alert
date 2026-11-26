@@ -419,31 +419,88 @@ def collect(seen: dict, now: dt.datetime, last_run: str = "") -> list:
 
 
 # ── 요약 ─────────────────────────────────────────────────────
+def _html_body(html_: str) -> str:
+    """trafilatura가 못 뽑는 페이지(자바스크립트로 그리는 조선일보 등)에서 본문 찾기:
+    JSON-LD articleBody → 조선일보(Fusion) content_elements → og:description 순"""
+    for m in re.finditer(r'"articleBody"\s*:\s*"((?:[^"\\]|\\.){200,})"', html_):
+        try:
+            return json.loads('"' + m.group(1) + '"')
+        except Exception:
+            pass
+    m = re.search(r"Fusion\.globalContent\s*=\s*(\{.*?\});\s*Fusion\.", html_, re.S)
+    if m:
+        try:
+            g = json.loads(m.group(1))
+            t = " ".join(re.sub(r"<[^>]+>", "", c.get("content", "")) for c in g.get("content_elements", [])
+                         if c.get("type") == "text")
+            if len(t) > 200:
+                return t
+        except Exception:
+            pass
+    m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']{60,})', html_)
+    return html.unescape(m.group(1)) if m else ""
+
+
+def _naver_copy(title: str) -> str:
+    """본문을 못 읽은 기사는 네이버 뉴스에 실린 같은 기사(n.news.naver.com)에서 본문을 가져옴"""
+    if not (NAVER_ID and NAVER_KEY):
+        return ""
+    q = re.sub(r"\[[^\]]*\]|[\"'“”‘’…]", " ", title).strip()[:60]
+    try:
+        r = requests.get(NAVER_URL, params={"query": q, "display": 5, "start": 1, "sort": "sim"},
+                         headers={"X-NCP-APIGW-API-KEY-ID": NAVER_ID, "X-NCP-APIGW-API-KEY": NAVER_KEY,
+                                  "Accept": "application/json"}, timeout=10)
+        items = r.json().get("items", []) if r.ok else []
+    except Exception:
+        return ""
+    for it in items:
+        link = it.get("link") or ""
+        t = re.sub(r"<[^>]+>", "", html.unescape(it.get("title") or ""))
+        if "n.news.naver.com" not in link or not similar(t, title, 0.6):
+            continue
+        try:
+            rr = requests.get(link, headers=UA, timeout=10)
+            m = re.search(r'id="dic_area"[^>]*>(.*?)</article>', rr.text, re.S) or re.search(r'id="dic_area"[^>]*>(.*?)</div>', rr.text, re.S)
+            text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))).strip() if m else ""
+            if len(text) > 200:
+                return text
+        except Exception:
+            continue
+    return ""
+
+
 def fetch_body(art: dict) -> str:
-    """기사 본문 추출(실패하면 빈 문자열)."""
+    """기사 본문 추출(실패하면 빈 문자열). 11.27. 조선일보·뉴스1 본문이 비어 카드 요점이 한 줄만 나와
+    페이지 속 데이터(JSON-LD 등)와 네이버 뉴스 사본을 차례로 시도"""
     try:
         import trafilatura
     except ImportError:
         return ""
-    for url in (art["url"],):
-        if not url or "news.google.com" in url:
-            continue
+    url, page = art["url"], ""
+    if url and "news.google.com" not in url:
         try:
             r = requests.get(url, headers=UA, timeout=10)
             r.encoding = r.apparent_encoding or r.encoding
-            text = trafilatura.extract(r.text) or ""
+            page = r.text
+            text = trafilatura.extract(page) or ""
             if re.search(r"Access Denied|permission to access|403 Forbidden|로봇이 아닙니다", text[:300]):
-                continue                           # 차단 페이지는 본문으로 쓰지 않음
+                text, page = "", ""                # 차단 페이지는 본문으로 쓰지 않음
             try:                                   # 기사 페이지에 적힌 작성일(구글 날짜가 틀릴 때 대비)
-                meta = trafilatura.extract_metadata(r.text)
+                meta = trafilatura.extract_metadata(page) if page else None
                 art["page_date"] = (meta.date if meta and meta.date else "")[:10]
             except Exception:
                 art["page_date"] = ""
             if len(text) > 200:
                 return text[:2500]
+            alt = _html_body(page) if page else ""
+            if len(alt) > 200:
+                return alt[:2500]
         except Exception:
-            continue
-    return ""
+            pass
+    alt = _naver_copy(art.get("title", ""))
+    if alt:
+        return alt[:2500]
+    return (_html_body(page) if page else "")[:2500]   # 마지막으로 og:description(짧아도)
 
 
 RECENT_SENT: list = []                             # 최근 12시간 동안 보냈거나 모음 대기 중인 기사 제목(AI 중복 판단용)
@@ -2188,7 +2245,7 @@ def card_pages(cards: list, sources: list, when: str, when_short: str, label: st
             f"<div style='padding:50px 80px 44px'><div style='font-size:{hs}px;font-weight:900;line-height:1.28'>{_esc(c['headline'])}</div>{kbox}</div>"
             f"<div style='flex:1;background:{_SOFT};position:relative;overflow:hidden;padding:44px 80px 150px'>"
             f"<div style='position:absolute;right:-50px;bottom:90px;opacity:.07'>{_icon(c['tag'], 460, _NAVY, 3)}</div>"
-            f"<div style='position:relative;height:100%;display:flex;flex-direction:column;justify-content:center;gap:28px'>{rows}</div></div></div>"
+            f"<div style='position:relative;height:100%;display:flex;flex-direction:column;justify-content:flex-start;gap:28px'>{rows}</div></div></div>"
             f"<div class='foot'><span>출처: {_esc(src)}</span><span>{CARD_DISCLAIMER}</span></div>"))
     # ── 마무리 ──
     extra = f"이 밖에 중수청 관련 사안 {more}개는<br>텔레그램 알림에서 확인하세요.<br><br>" if more else ""
