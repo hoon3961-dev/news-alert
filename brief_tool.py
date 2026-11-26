@@ -1,6 +1,7 @@
 """Claude가 브리핑 원고를 직접 쓸 때 쓰는 도구(AI 호출 없음)
 
   python brief_tool.py prepare [아침|오후]        → 이번 브리핑에 들어갈 기사 목록(본문 포함)을 brief_input.json으로
+  python brief_tool.py prepare 아침 --test 24     → 시험: 최근 24시간 기사로("test": true를 원고 파일에 그대로 넣으면 발송 기록을 안 바꿈)
   python brief_tool.py check briefs/파일.json     → 원고·카드를 원문과 기계적으로 대조해 문제 목록 출력(문제 있으면 종료 코드 1)
   python brief_tool.py publish briefs/파일.json   → 점검 통과 시 저장소에 올리고 GitHub에 발송 요청
 
@@ -46,12 +47,14 @@ def _state():
     return json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"), encoding="utf-8"))
 
 
-def prepare(label=""):
+def prepare(label="", hours=0, test=False):
     now = dt.datetime.now(n.KST)
     st = _state()
     holiday = now.weekday() >= 5 or now.date() in n._kr_holidays()
     label = label or ("아침" if now.hour < 12 else "오후")
     since = dt.datetime.fromisoformat(st["audio_cut"]) if st.get("audio_cut") else now - dt.timedelta(hours=14)
+    if hours:                                       # 시험: 최근 N시간 기사로(발송 범위·시각 기록은 바꾸지 않음)
+        since = now - dt.timedelta(hours=hours)
     recs = [n.from_record(r) for r in st.get("audio_log", []) if dt.datetime.fromisoformat(r["found"]) > since]
     recs = [r for r in recs if not n.is_photo(r)]
     arts, seen_u = {}, set()
@@ -61,7 +64,7 @@ def prepare(label=""):
         seen_u.add(r["url"])
         arts[f"a{k}"] = {"title": r["title"], "press": r["press"], "url": r["url"], "pub": r["pub"].isoformat(),
                          "summary": r.get("summary") or "", "body": (r.get("body") or "").strip()}
-    out = {"label": label, "now": now.isoformat(), "since": since.isoformat(), "cut": now.isoformat(),
+    out = {"label": label, "test": test, "now": now.isoformat(), "since": since.isoformat(), "cut": now.isoformat(),
            "briefing_day": not holiday, "intro": n.intro_text(label, now),
            "articles": arts,
            "title_only_ids": [i for i, a in arts.items() if not a["body"]]}
@@ -158,8 +161,10 @@ def publish(path):
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd == "prepare":
-        prepare(sys.argv[2] if len(sys.argv) > 2 else "")
+    if cmd == "prepare":                            # prepare [아침|오후] [--test 시간]
+        args = sys.argv[2:]
+        hrs = int(args[args.index("--test") + 1]) if "--test" in args else 0
+        prepare(next((x for x in args if x in ("아침", "오후")), ""), hrs, bool(hrs))
     elif cmd == "check":
         sys.exit(0 if check(sys.argv[2]) else 1)
     elif cmd == "publish":

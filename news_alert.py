@@ -2682,7 +2682,8 @@ def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
     n_art = len({a["url"] for a in arts.values()})
     lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})" + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
              for n, g in enumerate(groups, 1) if g]
-    caption = f"🎧 <b>중수청 {label} 브리핑</b>\n{span} 중수청 기사 {n_art}건 · {len(groups)}개 사안\n" + "\n".join(lines)
+    test = bool(d.get("test"))
+    caption = ("🧪 <b>시험 · Claude 작성</b>\n" if test else "") + f"🎧 <b>중수청 {label} 브리핑</b>\n{span} 중수청 기사 {n_art}건 · {len(groups)}개 사안\n" + "\n".join(lines)
     if d.get("title_only"):
         caption += "\n📎 본문 미확인으로 원고 제외: " + ", ".join(html.escape(t[:30]) for t in d["title_only"])
     caption += "\n🔎 " + html.escape(d.get("check") or "Claude 작성 · 원문 대조 완료")
@@ -2706,6 +2707,8 @@ def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
             cards.append({"tag": c.get("tag") if c.get("tag") in CARD_TAGS else "기타",
                           "headline": _fix_facts(c["headline"]), "points": [_fix_facts(x) for x in c["points"]][:3]})
         card_briefing(use, label, now, n_art, 0, mid, cards, "")
+    if test:                                       # 시험은 발송 범위·시각 기록을 바꾸지 않음
+        return
     slot = None                                    # 이 시간대 자동 브리핑(대비책)이 다시 나가지 않게
     for t in AUDIO_TIMES.split(","):
         m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", t)
