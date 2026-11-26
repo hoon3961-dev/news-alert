@@ -1005,6 +1005,8 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "요약과 기사 본문이 다르면 본문을 따른다. 본문에 없는 내용은 쓰지 않는다. '(제목 기준)' 요약은 제목에 적힌 사실만 전한다. "
             "요약의 '신설 중수청'은 '새로 출범한 중수청'으로 쓰고, '새로 생기는', '신설될', '출범할' 같은 미래 표현은 쓰지 않는다.\n"
             "[구성]\n"
+            "- '(제목 기준)' 요약만 있는 사안은 '~라는 보도가 나왔습니다' 한 문장으로 전하고, '~라는 내용입니다', '~로 보도됐습니다'처럼 쓰지 않는다. "
+            "제목에 없는 평가('드문 발언' 등)를 붙이지 않는다.\n"
             "- 원고는 첫머리 문단으로 시작하고, 사안 문단들, 맺음말 문단 순서로 끝낸다. 첫머리를 뒤에 다시 쓰지 않는다.\n"
             "- 기사 속 '오늘·어제·내일·이번 주' 같은 말은 기사 작성일 기준이다. 원고에서는 '25일'처럼 날짜로 바꿔 쓰고, "
             f"'오늘'은 그 일이 정말 오늘({now.month}월 {now.day}일) 일어난 경우에만 쓴다.\n"
@@ -1753,7 +1755,8 @@ def verify_claims(claims: list, groups: list, now: dt.datetime):
         "- 원문과 반대되거나 다른 사실: 숫자·날짜·기관명·소속·직함·주체가 원문과 다름, 원문에 없는 인과관계를 만듦, "
         "이미 일어난 일을 미래로(또는 계획을 확정으로) 바꿈, 제목의 비유를 사실로 바꿈, 의견·추측을 사실로 단정.\n"
         "- 원문 어디에도 없는 새 사실(숫자·사건·인물·발언)을 덧붙임.\n"
-        "- 기본 사실과 어긋남.\n"
+        "- 기본 사실과 어긋남. 특히 중수청·경찰청의 소속이나 행안부의 관할이 새로 바뀌는 것처럼 쓴 문장('관할하게 됩니다', '산하가 됩니다')은 "
+        "원문에 그렇게 적혀 있어도 왜곡이다(둘 다 원래 행안부 소속).\n"
         "- 원문에 없는 전망·평가를 덧붙임(예: '~이 중요해질 전망입니다', '과제로 떠올랐습니다'). 원문에 그 전망이 누구의 말로 있으면 틀린 것이 아님.\n"
         "틀린 것이 아닌 경우(표시 금지):\n"
         "- 원문 정보를 줄이거나 생략함(예: 기간·조건을 빼고 핵심만 말함). 빠진 정보는 오류가 아니다.\n"
@@ -1825,9 +1828,32 @@ def _plain(p: str, src: str = "") -> str:
     for w in ("그래서", "따라서", "이 때문에", "이에 따라"):
         if w not in src:
             p = re.sub(r"(^|(?<=[.?!]\s))" + w + r",?\s+", r"\1", p)
+    p = _fix_facts(p)
+    p = re.sub(r"(\S+?)에 그치고 있습니다", lambda m: m.group(1) + "입니다", p)
+    # '약 76퍼센트인 4억원을 ~했습니다' → '4억원을 ~했습니다. 전체의 약 76퍼센트입니다.'(귀로 듣기 어려운 숫자 겹치기)
+    p = re.sub(r"(이 가운데 )?약 (\d+(?:\.\d+)?)퍼센트인 ([\d억만천,\s]+원)(을|를|은|는|이|가) ([^.]*?다)\.",
+               lambda m: f"{m.group(1) or ''}{m.group(3)}{m.group(4)} {m.group(5)}. 전체의 약 {m.group(2)}퍼센트입니다.", p)
+    # 기사에 있더라도 앵커가 단정하면 해설처럼 들리는 평가·전망 문장은 뺌(누가 한 말인지 밝힌 문장은 둠)
+    sents = re.split(r"(?<=[.?!])\s+", p)
+    keep = [x for x in sents if not (_EVAL_END.search(x) and not _SAID.search(x))]
+    if keep:
+        p = " ".join(keep)
     if p != p0:
         FIXES.append("표현")
     return p
+
+
+_EVAL_END = re.compile(r"(떠올랐습니다|부상했습니다|도마에 올랐습니다|셈입니다|전망입니다|것으로 보입니다|중요해질 것입니다|"
+                       r"드문 (?:발언|일|사례)입니다|이례적입니다|이례적인 일입니다)\.?$")
+_SAID = re.compile(r"[고라]\s*(?:말했|밝혔|전했|내다봤|분석했|지적했|평가했|설명했|강조했|주장했)")
+
+
+def _fix_facts(t: str) -> str:
+    """기본 사실과 어긋나는 흔한 표현 교정: 중수청·경찰청은 원래 행안부 소속이라 '관할하게 됩니다'(새로 바뀜)가 아님
+    (11.27. 아침: 기사 '관할하게 된 행안부'를 '관할하게 됩니다'로 옮김)"""
+    t = re.sub(r"(관할|관장|감독)하게 됩니다", r"\1합니다", t)
+    t = re.sub(r"(관할|관장|감독)하게 된", r"\1하는", t)
+    return re.sub(r"(관할|관장|감독)하게 됨", r"\1함", t)
 
 
 def _fix_today(p: str, g: list, now: dt.datetime) -> str:
@@ -1892,6 +1918,8 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
     intro, body, outro = _parse_script(raw_script, intro_fixed)
     if outro_fixed:                               # 맺음말은 항상 프로그램 문구
         outro = outro_fixed
+    for c in cards or []:
+        c["headline"], c["points"] = _fix_facts(c["headline"]), [_fix_facts(x) for x in c["points"]]
     body = [(k, _plain(_fix_today(p, groups[k - 1] if 1 <= k <= len(groups) else [], now),
                        _src_text(groups[k - 1]) if 1 <= k <= len(groups) else "")) for k, p in body]
     claims, where, i = [], {}, 0
