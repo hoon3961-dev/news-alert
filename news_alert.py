@@ -156,7 +156,11 @@ AUDIO_ON = (os.getenv("AUDIO") or "on").strip().lower() != "off"
 AUDIO_TIMES = os.getenv("AUDIO_TIMES") or "07:10,17:00"
 AUDIO_MAX = int(os.getenv("AUDIO_MAX") or "10")          # 한 번에 읽을 최대 사안 수
 AUDIO_VOICE = (os.getenv("AUDIO_VOICE") or "").strip()  # 비우면 기본 목소리
-AUDIO_TEST = (os.getenv("AUDIO_TEST") or "").strip().lower() == "true"   # Actions에서 수동 시험
+AUDIO_TEST = (os.getenv("AUDIO_TEST") or "").strip().lower() == "true"
+# Claude가 직접 쓴 원고(briefs/*.json)로 음성·카드만 만들어 보냄(11.27.~). 자동 브리핑은 정시+BRIEF_FALLBACK_MIN분까지
+# Claude 원고가 안 오면 대신 나감(대비책)
+BRIEF_FILE = (os.getenv("BRIEF_FILE") or "").strip()
+BRIEF_FALLBACK_MIN = int(os.getenv("BRIEF_FALLBACK_MIN") or "40")   # Actions에서 수동 시험
 GOOGLE_TTS_KEY = (os.getenv("GOOGLE_TTS_KEY") or "").strip()            # 있으면 구글 음성 사용
 AUDIO_BGM = (os.getenv("AUDIO_BGM") or "on").strip().lower() != "off"   # 배경음악(직접 합성한 음악이라 저작권 문제 없음)
 AUDIO_BGM_STYLE = int(os.getenv("AUDIO_BGM_STYLE") or "1")              # 1 속보 시그널(기본) ~ 5
@@ -872,7 +876,8 @@ def audio_due(state: dict, now: dt.datetime):
         if not m:
             continue
         slot = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
-        if slot <= now < slot + dt.timedelta(hours=3) and (last is None or last < slot):
+        if slot + dt.timedelta(minutes=BRIEF_FALLBACK_MIN) <= now < slot + dt.timedelta(hours=3) \
+                and (last is None or last < slot):
             return "아침" if slot.hour < 12 else "오후"
     return None
 
@@ -983,7 +988,7 @@ def intro_text(label: str, now: dt.datetime) -> str:
 # 2) 원고 쓰기: AI는 확인된 사실 목록만 보고 쓰며 문장마다 사실 번호를 담. 숫자·기관명·날짜가 그 사실에 없으면 문장을 뺌
 # 3) 본문 없는 사안(제목뿐)은 원고에서 빼고 목록으로만 알림
 WRITE_MODEL = (os.getenv("WRITE_MODEL") or "").strip() or VERIFY_MODEL      # 사실 뽑기·원고 쓰기 모델(기본 Sonnet)
-BRIEF_MODE = (os.getenv("BRIEF_MODE") or "both").strip().lower()             # old | new | both(기존 발송 + 새 방식 원고 비교 발송)
+BRIEF_MODE = (os.getenv("BRIEF_MODE") or "old").strip().lower()             # old | new | both(기존 발송 + 새 방식 원고 비교 발송)
 V2_LOG: list = []                                                          # 새 방식에서 버린 사실·문장(점검 기록)
 
 
@@ -2655,6 +2660,62 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
     print(f"카드뉴스({label}) 발송: {len(paths)}장, 링크 {sum(len(g) for g in show)}건")
 
 
+def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
+    """Claude가 쓴 원고 파일로 음성·카드 발송(AI 호출 없음).
+    파일: {label, cut, paras:[{text, sources:[기사 id]}], cards:[{tag, headline, points, sources}], articles:{id:{title,press,url}}, more, notes}"""
+    d = json.load(open(path, encoding="utf-8"))
+    label = d["label"]
+    arts = d["articles"]
+    by_url = {r["url"]: r for r in state.get("audio_log", [])}
+    groups, body = [], []
+    for k, p_ in enumerate(d["paras"], 1):
+        g = [dict(arts[i], body=(by_url.get(arts[i]["url"]) or {}).get("body", "")) for i in p_.get("sources", []) if i in arts]
+        groups.append(g)
+        text = _plain(_fix_facts(p_["text"].strip()), _src_text(g))     # 마지막 기계 교정(관할 표현·평가 표현 등)
+        body.append((k, text))
+    raw = _transitions(intro_text(label, now), body, closing_text(label, now, int(d.get("more") or 0)))
+    script, spoken = speakable(raw), speakable(raw, sound=True)
+    wd = "월화수목금토일"
+    since = dt.datetime.fromisoformat(d.get("since") or state.get("audio_cut") or (now - dt.timedelta(hours=14)).isoformat())
+    span = (f"{since:%H:%M}~{now:%H:%M}" if since.date() == now.date() else
+            f"{since:%m.%d.}({wd[since.weekday()]}) {since:%H:%M} ~ {now:%m.%d.}({wd[now.weekday()]}) {now:%H:%M}")
+    n_art = len({a["url"] for a in arts.values()})
+    lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})" + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
+             for n, g in enumerate(groups, 1) if g]
+    caption = f"🎧 <b>중수청 {label} 브리핑</b>\n{span} 중수청 기사 {n_art}건 · {len(groups)}개 사안\n" + "\n".join(lines)
+    if d.get("title_only"):
+        caption += "\n📎 본문 미확인으로 원고 제외: " + ", ".join(html.escape(t[:30]) for t in d["title_only"])
+    caption += "\n🔎 " + html.escape(d.get("check") or "Claude 작성 · 원문 대조 완료")
+    if len(caption) > 1000:
+        caption = caption[:990].rsplit("\n", 1)[0] + "\n…"
+    state["audio_scripts"] = (state.get("audio_scripts", []) + [[now.isoformat(), label, script, "Claude 작성"]])[-10:]
+    fpath = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
+    engine = tts_mp3(spoken, fpath)
+    mixed = add_bgm(fpath, now)
+    mid = send_audio(mixed, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
+    if (os.getenv("AUDIO_SCRIPT_MSG") or "on").strip().lower() != "off":
+        send_script(script, mid, "📝 <b>음성 원고</b> (눌러서 펼치기 · 문단 번호로 지적해 주세요)\n")
+    print(f"Claude 원고 음성 발송({label}): 원고 {len(script)}자, {engine}")
+    if CARD_ON and d.get("cards"):
+        use, cards = [], []
+        for c in d["cards"][:CARD_MAX]:
+            g = [arts[i] for i in c.get("sources", []) if i in arts]
+            if not g:
+                continue
+            use.append(g)
+            cards.append({"tag": c.get("tag") if c.get("tag") in CARD_TAGS else "기타",
+                          "headline": _fix_facts(c["headline"]), "points": [_fix_facts(x) for x in c["points"]][:3]})
+        card_briefing(use, label, now, n_art, 0, mid, cards, "")
+    slot = None                                    # 이 시간대 자동 브리핑(대비책)이 다시 나가지 않게
+    for t in AUDIO_TIMES.split(","):
+        m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", t)
+        if m and (int(m.group(1)) < 12) == (label == "아침"):
+            slot = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+    state["last_audio"] = max(now, slot).isoformat() if slot else now.isoformat()
+    if d.get("cut"):
+        state["audio_cut"] = d["cut"]
+
+
 def audio_briefing(state: dict, now: dt.datetime) -> None:
     label = audio_due(state, now)
     if not label:
@@ -2790,6 +2851,11 @@ def main() -> int:
 
     seen = load_seen()
     state = load_state()
+    if BRIEF_FILE:                                 # Claude 원고 발송 실행: 기사 수집 없이 음성·카드만
+        manual_briefing(state, now, BRIEF_FILE)
+        save_seen(seen, now)
+        save_state(state)
+        return 0
     arts = collect(seen, now, state.get("last_run", ""))
     decode_links(arts)
     arts = dedupe(arts, seen, state, now)

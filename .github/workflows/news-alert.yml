@@ -13,6 +13,10 @@ on:
         description: "공소청·형사사법 모음 지금 시험 발송(대기 중인 기사)"
         type: boolean
         default: false
+      brief_file:
+        description: "Claude가 쓴 브리핑 원고 파일(briefs/*.json) — 음성·카드만 만들어 발송"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -73,6 +77,8 @@ jobs:
           AUDIO_PARA_GAP: ${{ vars.AUDIO_PARA_GAP }}
           AUDIO_COMMA_GAP: ${{ vars.AUDIO_COMMA_GAP }}
           AUDIO_TEST: ${{ inputs.audio_test }}
+          BRIEF_FILE: ${{ inputs.brief_file }}
+          BRIEF_FALLBACK_MIN: ${{ vars.BRIEF_FALLBACK_MIN }}
           CARD: ${{ vars.CARD }}
           CARD_MAX: ${{ vars.CARD_MAX }}
           VERIFY: ${{ vars.VERIFY }}
