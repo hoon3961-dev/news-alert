@@ -64,8 +64,10 @@ def prepare(label="", hours=0, test=False):
         seen_u.add(r["url"])
         body = (r.get("body") or "").strip()
         words = [w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", re.sub(r"\[[^\]]*\]", " ", r["title"])) if w not in n._STOP]
-        hit = sum(1 for w in words if w in body) / max(1, len(words))
-        if body and hit < 0.4:                      # 본문 자리에 다른 기사·광고가 잡힌 경우(11.27. 세계일보) → 본문 없음으로
+        head_ = re.sub(r"(\.\.\.|…)$", "", re.sub(r"\[[^\]]*\]", "", r["title"])).strip()
+        rest = body.replace(head_, " ", 1) if head_ else body   # 본문 맨 앞에 제목만 붙고 나머지는 딴 내용인 경우 제목은 빼고 봄
+        hit = sum(1 for w in set(words) if w in rest)
+        if body and hit < min(2, len(set(words))):                      # 본문 자리에 다른 기사·광고가 잡힌 경우(11.27. 세계일보) → 본문 없음으로
             body = ""
         arts[f"a{k}"] = {"title": r["title"], "press": r["press"], "url": r["url"], "pub": r["pub"].isoformat(),
                          "summary": r.get("summary") or "", "body": body}
