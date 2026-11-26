@@ -1714,6 +1714,16 @@ _LEAD = re.compile(r"^(?:(?:다음|마지막) 소식입니다[.,]?|이어서 전
 _INTRO_RE = re.compile(r"언론보도 브리핑입니다")
 
 
+def _plain(p: str) -> str:
+    """'~에 그쳤습니다', '~에 불과했습니다'처럼 평가가 섞인 끝맺음을 있는 그대로('~였습니다')로 바꿈(지시문으로 막아도 자주 나옴)"""
+    def sub(m):
+        w = m.group(1)
+        last = w[-1]
+        batchim = "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 != 0
+        return w + ("이었습니다" if batchim or last.isdigit() else "였습니다")
+    return re.sub(r"(\S+?)(?:에|에 불과)\s*(?:그쳤습니다|불과했습니다)", sub, p)
+
+
 def _fix_today(p: str, g: list, now: dt.datetime) -> str:
     """기사 속 '오늘'을 그대로 옮긴 경우(11.26. 아침: 25일 증선위 의결을 '오늘 정례회의'로 읽음) 기사 작성일로 바꿈.
     그 사안의 기사가 모두 오늘 이전에 쓰였을 때만 바꿈"""
@@ -1773,7 +1783,7 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
     intro, body, outro = _parse_script(raw_script, intro_fixed)
     if outro_fixed:                               # 맺음말은 항상 프로그램 문구
         outro = outro_fixed
-    body = [(k, _fix_today(p, groups[k - 1] if 1 <= k <= len(groups) else [], now)) for k, p in body]
+    body = [(k, _plain(_fix_today(p, groups[k - 1] if 1 <= k <= len(groups) else [], now))) for k, p in body]
     claims, where, i = [], {}, 0
     for pi, (k, p) in enumerate(body):
         for si, s_ in enumerate(_split_sents(p)):
