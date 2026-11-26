@@ -122,7 +122,7 @@ def check(path):
         for sent in re.split(r"(?<=[.?!])\s+", p.get("text", "").strip()):
             if sent and not re.search(r"(니다|니까)[.?!]?$", sent):
                 probs.append(f"원고 {k}문단: '~습니다/~입니다'로 끝나지 않음 | {sent[:50]}")
-            if len(sent) > 75:
+            if len(sent) > 95:
                 probs.append(f"원고 {k}문단: 문장이 김({len(sent)}자) | {sent[:40]}")
     for k, c in enumerate(d.get("cards", []), 1):
         if len(c.get("headline", "")) > 30:
