@@ -918,7 +918,7 @@ def closing_text(label: str, now: dt.datetime, more: int) -> str:
 
 
 def intro_text(label: str, now: dt.datetime) -> str:
-    return f"{now.month}월 {now.day}일 {'월화수목금토일'[now.weekday()]}요일 {label}, 중수청 언론보도 브리핑입니다."
+    return f"{now.month}월 {now.day}일 {'월화수목금토일'[now.weekday()]}요일, 중수청 언론보도 {label} 브리핑입니다."
 
 
 def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime, more: int) -> str:
@@ -971,6 +971,8 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "- 사람 직함은 요약에 나온 그대로만 쓴다. 요약에 없는 직함·소속을 붙이지 않는다(기억에 의존한 직함은 틀릴 수 있음. "
             "예: 요약에 '한동훈 딸'이라고만 있으면 '한동훈 씨의 딸'로 쓰고 장관·대표 같은 직함을 붙이지 않는다). 어려운 법률 용어는 쉬운 말로 한 번 풀어 준다(예: 불송치, 즉 경찰이 사건을 검찰로 넘기지 않기로 한 것).\n"
             "- 숫자는 듣기 쉽게: '87건', '3억 원', '11월 16일'. 퍼센트는 '퍼센트'로.\n"
+            "- 한 문장에 숫자를 여러 개 겹쳐 '약 76퍼센트인 4억 원은'처럼 '~인'으로 잇지 않는다. 금액·건수를 먼저 말하고 비율은 "
+            "'전체의 약 76퍼센트입니다'처럼 따로 말한다.\n"
             "- 기관명은 요약·본문에 적힌 그대로 쓴다. 줄여 쓴 이름을 정식 명칭으로 늘리거나('서울남부' → '서울남부지방공소청'), "
             "부서 이름을 기관 이름으로 바꾸지 않는다('서울동부 중대범죄기소제2부'를 '서울동부공소청'으로 쓰지 않음).\n"
             "- 괄호, 따옴표, 대괄호, 기호(·, →, ~, /), 영문 약어는 쓰지 않는다. [단독] 표시는 읽지 않는다.\n"
@@ -1105,6 +1107,7 @@ _SOUND = [  # 귀로 들을 때만 쓰는 소리 표기(원고에는 원래 표�
     # 조·억·만 앞 숫자는 한글 소리로(5억 2500만 원 → 오억 이천오백만 원)
     (r"(?<![\d.])(\d+)(?=\s?(?:조|억|만))",
      lambda m: "" if m.group(1) == "1" and m.string[m.end():].lstrip().startswith("만") else _sino(m.group(1))),   # 1만 → 만
+    (r"(?<![\d.])(\d+)(?=\s?(?:퍼센트|%))", lambda m: _sino(m.group(1))),   # 76퍼센트 → 칠십육퍼센트
     # 소수(4.2퍼센트 등): 숫자로 두면 음성 엔진이 '사 점 이 … 퍼센트'처럼 끊어 읽어 한글 소리로 붙여 씀(11.26. 지적)
     (r"(?<![\d.])(\d+)\.(\d+)(?![.\d])(?=\s?(?:퍼센트|%|배|포인트|%p|억|조|만|명|건|도|개월|년|kg|㎏|km|시간|초|분))",
      lambda m: _sino(m.group(1)) + "점" + "".join("영일이삼사오육칠팔구"[int(c)] for c in m.group(2))),
@@ -1170,7 +1173,7 @@ def speakable(text: str, sound: bool = False) -> str:
 
 SENT_GAP = float(os.getenv("AUDIO_SENT_GAP") or "0.35")   # 문장 사이 쉼(초)
 PARA_GAP = float(os.getenv("AUDIO_PARA_GAP") or "0.9")    # 문단(사안) 사이 쉼(초)
-COMMA_GAP = float(os.getenv("AUDIO_COMMA_GAP") or "0.22")  # 쉼표 쉼(초). 0이면 쉼표에서 나누지 않음
+COMMA_GAP = float(os.getenv("AUDIO_COMMA_GAP") or "0.18")  # 쉼표 쉼(초). 0이면 쉼표에서 나누지 않음
 
 
 def _clauses(sent: str) -> list:
@@ -1746,7 +1749,7 @@ _MARK = re.compile(r"^\s*\[\s*사안\s*(\d+)\s*\]\s*")
 _LEAD = re.compile(r"^(?:(?:다음|마지막) 소식입니다[.,]?|이어서 전해 드립니다[.,]?|(?:먼저|이어서|한편|다음으로|마지막으로)(?:,|\s))\s*")
 
 
-_INTRO_RE = re.compile(r"언론보도 브리핑입니다")
+_INTRO_RE = re.compile(r"언론보도 (?:\S+ )?브리핑입니다")
 
 
 def _plain(p: str, src: str = "") -> str:
