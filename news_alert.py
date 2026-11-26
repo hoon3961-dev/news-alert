@@ -992,8 +992,17 @@ def _squash(t: str) -> str:
 
 
 def _json_obj(text: str):
-    i = min([k for k in (text.find("{"), text.find("[")) if k >= 0] or [0])
-    return json.JSONDecoder().raw_decode(text[i:])[0]
+    """답에서 JSON 객체를 찾아 읽음(앞뒤 설명·코드 블록 표시·'[사안 1]' 같은 대괄호가 있어도). 못 찾으면 오류 + 답 앞부분 기록"""
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"\{", text or ""):
+        try:
+            obj = dec.raw_decode(text[m.start():])[0]
+            if isinstance(obj, dict) and obj:
+                return obj
+        except ValueError:
+            continue
+    V2_LOG.append(f"AI 답을 읽지 못함(앞부분: {(text or '(빈 답)')[:120]!r})")
+    raise ValueError(f"JSON 없음: {(text or '(빈 답)')[:120]!r}")
 
 
 def extract_facts(groups: list, now: dt.datetime) -> tuple:
@@ -2667,6 +2676,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
             except Exception as e:
                 AUDIO_ERR.append(f"새 방식: {type(e).__name__}: {str(e)[:150]}")
                 print(f"[새 방식 실패] {type(e).__name__}: {e}", file=sys.stderr)
+                v2 = {"script": "", "title_only": [], "log": list(V2_LOG) + [f"새 방식 실패: {type(e).__name__}: {str(e)[:150]}"],
+                      "n_facts": 0}
         if BRIEF_MODE == "new" and v2 and v2.get("script"):
             raw_script, cards, removed, verified = v2["raw"], v2["cards"], v2["removed"], v2["verified"]
             title_only = v2["title_only"]
@@ -2746,7 +2757,7 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
             for i in range(0, len(msg), 3900):
                 send_telegram(msg[i:i + 3900])
     if AUDIO_ERR:
-        state["audio_errors"] = (state.get("audio_errors", []) + [[now.isoformat()] + AUDIO_ERR[-4:]])[-10:]
+        state["audio_errors"] = (state.get("audio_errors", []) + [[now.isoformat()] + AUDIO_ERR[-8:]])[-10:]
     if label != "시험":                            # 시험 발송은 다음 정기 브리핑 범위에 영향 없음
         state["audio_cut"] = now.isoformat()
         state["last_audio"] = now.isoformat()
