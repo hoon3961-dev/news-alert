@@ -978,6 +978,202 @@ def intro_text(label: str, now: dt.datetime) -> str:
     return f"{now.month}월 {now.day}일 {'월화수목금토일'[now.weekday()]}요일, 중수청 언론보도 {label} 브리핑입니다."
 
 
+# ══ 새 방식 브리핑(11.27. 재설계): AI는 사실을 '뽑기'만, 원고는 확인된 사실로만 ══════════════════
+# 1) 사실 뽑기: AI가 본문에서 사실마다 근거 문장을 그대로 옮겨 붙이고, 프로그램이 그 문장이 본문에 실제로 있는지 글자로 확인
+# 2) 원고 쓰기: AI는 확인된 사실 목록만 보고 쓰며 문장마다 사실 번호를 담. 숫자·기관명·날짜가 그 사실에 없으면 문장을 뺌
+# 3) 본문 없는 사안(제목뿐)은 원고에서 빼고 목록으로만 알림
+WRITE_MODEL = (os.getenv("WRITE_MODEL") or "").strip() or VERIFY_MODEL      # 사실 뽑기·원고 쓰기 모델(기본 Sonnet)
+BRIEF_MODE = (os.getenv("BRIEF_MODE") or "both").strip().lower()             # old | new | both(기존 발송 + 새 방식 원고 비교 발송)
+V2_LOG: list = []                                                          # 새 방식에서 버린 사실·문장(점검 기록)
+
+
+def _squash(t: str) -> str:
+    return re.sub(r"[\s\"'“”‘’`·…]+", "", _num_norm(html.unescape(t or "")))
+
+
+def _json_obj(text: str):
+    i = min([k for k in (text.find("{"), text.find("[")) if k >= 0] or [0])
+    return json.JSONDecoder().raw_decode(text[i:])[0]
+
+
+def extract_facts(groups: list, now: dt.datetime) -> tuple:
+    """→ ({사안번호: [{id, text, quote}]}, [제목뿐인 사안 번호])"""
+    blocks, title_only, bodies = [], [], {}
+    for n, g in enumerate(groups, 1):
+        arts = [(i, x) for i, x in enumerate(g[:4]) if (x.get("body") or "").strip()]
+        if not arts:
+            title_only.append(n)
+            continue
+        bodies[n] = " ".join(x["title"] + " " + x["body"][:2500] for _, x in arts)
+        pub = arts[0][1].get("pub")
+        try:
+            pub = pub if isinstance(pub, dt.datetime) else dt.datetime.fromisoformat(str(pub))
+            when = f"(작성 {pub.month}월 {pub.day}일)"
+        except Exception:
+            when = ""
+        blocks.append(f"[사안 {n}] {when}\n" + "\n".join(f"<기사> 제목: {x['title']}\n본문: {x['body'][:2500]}" for _, x in arts))
+    if not blocks:
+        return {}, title_only
+    prompt = (
+        "아래 기사 본문에서 사안마다 핵심 사실을 중요한 순서로 최대 6개 뽑아라. 글을 쓰는 것이 아니라 사실을 옮겨 적는 일이다.\n"
+        "[형식] JSON만 출력: {\"1\": [{\"id\": \"1a\", \"text\": \"...\", \"quote\": \"...\"}], \"2\": [...]}\n"
+        "- text: 사실 하나를 짧은 평서문으로. 숫자·기관명·직함·이름은 본문 표기 그대로(단위·이름을 바꾸거나 늘리지 않음).\n"
+        "- quote: 그 사실의 근거가 된 본문 문장을 한 글자도 바꾸지 않고 그대로 옮긴다(30~200자). 프로그램이 본문과 글자 대조한다.\n"
+        "- 기자의 해설·평가·전망('~할 전망', '과제로 떠올랐다', '우려가 나온다')은 사실로 뽑지 않는다. "
+        "누가 한 말이면 '○○는 ~라고 말함'처럼 말한 사람을 밝혀 뽑는다.\n"
+        "- 기사 속 '오늘·어제·지난달' 같은 말은 기사 작성일 기준이다. text에는 날짜로 바꿔 적는다(작성일은 사안 머리에 있음).\n"
+        "- 제목의 비유·수사적 표현을 사실로 바꾸지 않는다. 본문에 없는 인과관계를 만들지 않는다.\n"
+        f"- 오늘은 {now:%Y-%m-%d}. 기본 사실(본문이 이와 다르게 읽히면 그 사실은 뽑지 않는다):\n{FACTS}\n\n" + "\n\n".join(blocks))
+    data = _json_obj(ask_claude(prompt, 6000, model=WRITE_MODEL))
+    out = {}
+    for k, lst in (data.items() if isinstance(data, dict) else []):
+        try:
+            n = int(re.sub(r"\D", "", str(k)))
+        except ValueError:
+            continue
+        if n not in bodies:
+            continue
+        src = _squash(bodies[n])
+        for f in lst if isinstance(lst, list) else []:
+            try:
+                fid, text, quote = str(f["id"]), str(f["text"]).strip(), str(f["quote"]).strip()
+            except Exception:
+                continue
+            if len(_squash(quote)) < 12 or _squash(quote) not in src:
+                V2_LOG.append(f"사실 버림(근거 문장이 본문에 없음) {n}: {text[:40]}")
+                continue
+            bad = unsupported(_fix_facts(text), quote + " " + bodies[n][:300], now)
+            if bad:
+                V2_LOG.append(f"사실 버림(근거에 없는 {', '.join(bad)}) {n}: {text[:40]}")
+                continue
+            out.setdefault(n, []).append({"id": fid, "text": _fix_facts(text), "quote": quote})
+    for n in bodies:
+        if n not in out:
+            title_only.append(n)                    # 확인된 사실이 하나도 없으면 제목뿐인 사안과 같이 취급
+    return out, sorted(title_only)
+
+
+def _check_sent(t: str, cited: list, now: dt.datetime) -> list:
+    """문장 속 숫자·기관명이 인용한 사실(근거 문장 포함)에 있는지 → 없는 것 목록"""
+    ref = " ".join(f["text"] + " " + f["quote"] for f in cited)
+    bad = unsupported(t, ref, now)
+    if re.search(r"(?<![가-힣])(오늘|어제|내일|그제|이번 주|지난주)(?![가-힣])", t):
+        bad.append("상대 날짜")
+    return bad
+
+
+def compose_v2(facts: dict, groups: list, label: str, now: dt.datetime, more: int) -> tuple:
+    """확인된 사실만으로 원고(기존 형식: 첫머리, [사안 n] 문단, 맺음말)와 카드 → (원고, 카드, 사안 번호 목록)"""
+    order = [n for n in sorted(facts) if facts[n]]
+    if not order:
+        return "", [], []
+    flist = "\n\n".join(f"[사안 {n}]\n" + "\n".join(f"{f['id']}: {f['text']}" for f in facts[n]) for n in order)
+    prompt = (
+        "너는 중대범죄수사청 직원이 출근길에 귀로 듣는 라디오 뉴스 앵커다. 아래 [확인된 사실]만으로 원고와 카드뉴스 문구를 써라.\n"
+        "[절대 규칙] 확인된 사실에 없는 내용(숫자·날짜·기관명·직함·이름·인과관계·평가·전망)은 한 글자도 넣지 않는다. "
+        "문장마다 근거가 된 사실 id를 f에 적는다. 프로그램이 문장 속 숫자·기관명을 그 사실과 대조해 없으면 문장을 지운다.\n"
+        "[형식] JSON만 출력:\n"
+        "{\"paras\": [{\"n\": 1, \"sents\": [{\"t\": \"문장\", \"f\": [\"1a\"]}]}],\n"
+        " \"cards\": [{\"n\": 1, \"tag\": \"수사\", \"headline\": {\"t\": \"28자 이내 명사형 제목\", \"f\": [\"1a\"]}, "
+        "\"points\": [{\"t\": \"40자 이내 개조식\", \"f\": [\"1b\"]}]}]}\n"
+        f"- 사안마다 문단 하나, 카드 하나. 카드 tag는 {', '.join(CARD_TAGS)} 중 하나. 카드 요점은 사실이 있으면 3개.\n"
+        "[원고 말투]\n"
+        "- 모든 문장은 '~습니다/~입니다'. 한 문장 40자 안팎, 정보 하나. 첫 문장은 주어(누가·어느 기관이)를 밝히고 무슨 일인지 말한다.\n"
+        "- 첫머리·맺음말·넘김말('먼저', '이어서', '다음 소식입니다')은 쓰지 않는다(프로그램이 붙임).\n"
+        "- 숫자는 사실에 적힌 표기 그대로. 한 문장에 숫자 둘을 '~인'으로 잇지 않는다(금액 먼저, 비율은 다음 문장).\n"
+        "- '오늘·어제' 대신 날짜를 쓴다. 인과 연결어('그래서', '이에 따라', '이 때문에')는 사실에 그 관계가 적혀 있을 때만.\n"
+        "- 해석·평가·전망 표현('셈입니다', '떠올랐습니다', '전망입니다', '그쳤습니다', '드문', '이례적')을 쓰지 않는다. "
+        "누가 한 말은 '○○는 ~라고 말했습니다'로.\n"
+        "- 언론사 이름, 괄호, 따옴표, 기호, 영문 약어, 한자 약칭을 쓰지 않는다. 같은 내용을 다른 사안에서 되풀이하지 않는다.\n"
+        f"- 오늘은 {now:%Y-%m-%d}. 기본 사실:\n{FACTS}\n\n[확인된 사실]\n{flist}")
+    data = _json_obj(ask_claude(prompt, 6000, model=WRITE_MODEL))
+    by_id = {f["id"]: (n, f) for n in order for f in facts[n]}
+
+    def ok(item, sec_n, where):
+        t = _fix_facts(str(item.get("t", "")).strip())
+        ids = [str(x) for x in item.get("f", []) if str(x) in by_id]
+        cited = [by_id[i][1] for i in ids if by_id[i][0] == sec_n]
+        if not t:
+            return ""
+        if not cited:
+            V2_LOG.append(f"{where} 버림(근거 사실 없음): {t[:40]}")
+            return ""
+        bad = _check_sent(t, cited, now)
+        if bad:
+            V2_LOG.append(f"{where} 버림(사실에 없는 {', '.join(bad)}): {t[:40]}")
+            return ""
+        return t
+
+    paras = []
+    for p_ in data.get("paras", []) if isinstance(data, dict) else []:
+        try:
+            i = int(p_["n"])
+        except Exception:
+            continue
+        if i not in order:
+            continue
+        sents = [ok(x, i, f"원고 사안 {i}") for x in p_.get("sents", []) if isinstance(x, dict)]
+        sents = [x if x.endswith((".", "?", "!")) else x + "." for x in sents if x]
+        if sents:
+            paras.append((order.index(i) + 1, " ".join(sents)))
+    cards = []
+    for c in data.get("cards", []) if isinstance(data, dict) else []:
+        try:
+            i = int(c["n"])
+        except Exception:
+            continue
+        if i not in order:
+            continue
+        pts = [ok(x, i, f"카드 사안 {i}") for x in c.get("points", []) if isinstance(x, dict)]
+        pts = [x for x in pts if x][:3]
+        head = ok(c.get("headline") or {}, i, f"카드 사안 {i} 제목") or (pts[0] if pts else "")
+        if head and pts:
+            cards.append((order.index(i) + 1, {"tag": c.get("tag") if c.get("tag") in CARD_TAGS else "기타", "headline": head, "points": pts}))
+    lab = "오후" if label == "시험" and now.hour >= 12 else ("아침" if label == "시험" else label)
+    raw = "\n\n".join([intro_text(lab, now)] + [f"[사안 {i}] {t}" for i, t in sorted(paras)] + [closing_text(lab, now, more)])
+    card_by = dict(cards)
+    return raw, [card_by.get(i) or _card_fallback(groups[order[i - 1] - 1]) for i in range(1, len(order) + 1)], order
+
+
+def brief_v2(use: list, label: str, now: dt.datetime, more: int) -> dict:
+    """새 방식 전체 실행 → {script, raw, cards, groups, removed, verified, title_only, n_facts, log}"""
+    V2_LOG.clear()
+    facts, title_only = extract_facts(use, now)
+    raw, cards, order = compose_v2(facts, use, label, now, more)
+    groups = [use[n - 1] for n in order]
+    lab = "오후" if label == "시험" and now.hour >= 12 else ("아침" if label == "시험" else label)
+    if not raw:
+        return {"script": "", "title_only": title_only, "log": list(V2_LOG), "n_facts": 0}
+    raw2, cards2, removed, verified = verify_briefing(raw, cards, groups, now, closing_text(lab, now, more), intro_text(lab, now))
+    return {"script": speakable(raw2), "raw": raw2, "cards": cards2, "groups": groups, "removed": removed,
+            "verified": verified, "title_only": title_only, "n_facts": sum(len(v) for v in facts.values()),
+            "log": list(V2_LOG)}
+
+
+def send_v2_compare(v2: dict, use: list, label: str, reply_to: int) -> None:
+    """나란히 운영: 새 방식 원고를 글로(무음) 보내 기존 브리핑과 비교하게 함"""
+    e = html.escape
+    paras = [p.strip() for p in re.split(r"\n\s*\n", v2.get("script") or "") if p.strip()]
+    txt = (f"🧪 <b>새 방식 원고 (비교용 · {label})</b>\n확인된 사실 {v2.get('n_facts', 0)}개로만 작성 · "
+           f"사실·문장 버림 {len(v2.get('log', []))}건 · 원문 검증에서 뺌 {len(v2.get('removed') or [])}건\n\n"
+           + ("\n\n".join(f"{k}) {e(p)}" for k, p in enumerate(paras, 1)) or "(확인된 사실이 없어 원고를 만들지 않았습니다)"))
+    if v2.get("title_only"):
+        txt += "\n\n📎 <b>본문을 못 읽어 원고에서 뺀 사안</b>\n" + "\n".join(
+            f"· {e(use[n - 1][0]['title'][:60])} ({e(use[n - 1][0]['press'])})" for n in v2["title_only"])
+    if v2.get("log"):
+        txt += "\n\n<blockquote expandable>버린 사실·문장\n" + "\n".join(e(x) for x in v2["log"][:30]) + "</blockquote>"
+    for i in range(0, len(txt), 3900):
+        payload = {"chat_id": TG_CHAT.strip(), "text": txt[i:i + 3900], "parse_mode": "HTML",
+                   "disable_web_page_preview": True, "disable_notification": True}
+        if reply_to:
+            payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json=payload, timeout=30)
+        if not r.ok:                               # 잘린 HTML 태그 등으로 실패하면 서식 없이 다시
+            payload.pop("parse_mode")
+            payload["text"] = re.sub(r"<[^>]+>", "", payload["text"])
+            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json=payload, timeout=30)
+
+
 def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime, more: int) -> str:
     """AI가 뉴스 앵커 원고로 정리. 실패하면 요약을 그대로 이어 붙임"""
     items = []
@@ -2040,7 +2236,7 @@ def unsupported(text: str, src: str, now: dt.datetime = None) -> list:
 
 def _src_text(g: list) -> str:
     # 카드 AI에 본문 발췌도 주므로, 대조 기준에도 본문을 넣어야 본문에 있는 숫자·기관명을 '지어낸 것'으로 오인하지 않음
-    return "\n".join(f"{x['title']} {x.get('summary') or ''} {(x.get('body') or '')[:2500]}" for x in g)
+    return "\n".join(f"{x.get('title', '')} {x.get('summary') or ''} {(x.get('body') or '')[:2500]}" for x in g)
 
 
 _HANJA = {"李": "이", "尹": "윤", "文": "문", "朴": "박", "與": "여당", "野": "야당", "檢": "검찰", "警": "경찰",
@@ -2463,18 +2659,31 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         use, more = merged[:AUDIO_MAX], max(len(merged) - AUDIO_MAX, 0)
         FIXES.clear()
         n_body, n_all, title_only = refill_bodies(use)
-        raw_script = audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
-                                  ("아침" if label == "시험" else label), since, now, more)
-        try:
-            cards = card_copy(use[:CARD_MAX], now) if CARD_ON else []
-        except Exception as e:
-            AUDIO_ERR.append(f"카드 문구: {type(e).__name__}: {str(e)[:150]}")
-            cards = [_card_fallback(g) for g in use[:CARD_MAX]] if CARD_ON else []
-        thicken_cards(cards, use[:CARD_MAX])
-        # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
         lab = "오후" if label == "시험" and now.hour >= 12 else ("아침" if label == "시험" else label)
-        raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now, closing_text(lab, now, more),
-                                                              intro_text(lab, now))
+        v2 = None
+        if BRIEF_MODE in ("new", "both") and ANTHROPIC_KEY:
+            try:
+                v2 = brief_v2(use, label, now, more)
+            except Exception as e:
+                AUDIO_ERR.append(f"새 방식: {type(e).__name__}: {str(e)[:150]}")
+                print(f"[새 방식 실패] {type(e).__name__}: {e}", file=sys.stderr)
+        if BRIEF_MODE == "new" and v2 and v2.get("script"):
+            raw_script, cards, removed, verified = v2["raw"], v2["cards"], v2["removed"], v2["verified"]
+            title_only = v2["title_only"]
+            dropped_use = [use[n - 1] for n in title_only]
+            use = v2["groups"]                    # 원고·카드에 실제로 들어간 사안만(제목뿐인 사안은 따로 목록)
+        else:
+            dropped_use = []
+            raw_script = audio_script(use, lab, since, now, more)
+            try:
+                cards = card_copy(use[:CARD_MAX], now) if CARD_ON else []
+            except Exception as e:
+                AUDIO_ERR.append(f"카드 문구: {type(e).__name__}: {str(e)[:150]}")
+                cards = [_card_fallback(g) for g in use[:CARD_MAX]] if CARD_ON else []
+            thicken_cards(cards, use[:CARD_MAX])
+            # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
+            raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now, closing_text(lab, now, more),
+                                                                  intro_text(lab, now))
         warn = ("" if verified is True else "⚠️ <b>자동 검증 결과 불확실 · 공유 전 확인 필요</b>\n" if verified == "over"
                 else "⚠️ <b>자동 검증 실패 · 공유 전 확인 필요</b>\n")
         state["audio_verify"] = (state.get("audio_verify", []) + [[now.isoformat(), verified, removed]])[-10:]
@@ -2491,6 +2700,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         caption = warn + head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
         if more:
             caption += f"\n외 {more}개 사안"
+        if dropped_use:
+            caption += "\n📎 본문 미확인으로 원고 제외: " + ", ".join(html.escape(g[0]["title"][:30]) for g in dropped_use)
         caption += "\n" + check
         if len(caption) > 1000:                    # 텔레그램 설명란 1,024자 제한(점검 줄은 남김)
             body_ = caption[:-len(check)]
@@ -2515,6 +2726,13 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
                 send_removed(removed, mid, verified)
             except Exception as e:
                 print(f"[검증 알림 오류] {type(e).__name__}: {e}", file=sys.stderr)
+            if BRIEF_MODE == "both" and v2 is not None:
+                try:
+                    send_v2_compare(v2, use, label, mid)
+                    state["v2_scripts"] = (state.get("v2_scripts", []) + [[now.isoformat(), label, v2.get("script", ""),
+                                                                           v2.get("log", []), v2.get("title_only", [])]])[-10:]
+                except Exception as e:
+                    print(f"[새 방식 비교 발송 오류] {type(e).__name__}: {e}", file=sys.stderr)
             print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
             if CARD_ON:
                 try:

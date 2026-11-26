@@ -77,6 +77,8 @@ jobs:
           CARD_MAX: ${{ vars.CARD_MAX }}
           VERIFY: ${{ vars.VERIFY }}
           VERIFY_MODEL: ${{ vars.VERIFY_MODEL }}
+          BRIEF_MODE: ${{ vars.BRIEF_MODE }}
+          WRITE_MODEL: ${{ vars.WRITE_MODEL }}
           GOOGLE_TTS_KEY: ${{ secrets.GOOGLE_TTS_KEY }}
         run: python news_alert.py
 
