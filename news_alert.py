@@ -917,6 +917,10 @@ def closing_text(label: str, now: dt.datetime, more: int) -> str:
             + f"자세한 내용은 {where} 확인하실 수 있습니다. 지금까지 중수청 언론보도 브리핑이었습니다. " + greet)
 
 
+def intro_text(label: str, now: dt.datetime) -> str:
+    return f"{now.month}월 {now.day}일 {'월화수목금토일'[now.weekday()]}요일 {label}, 중수청 언론보도 브리핑입니다."
+
+
 def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime, more: int) -> str:
     """AI가 뉴스 앵커 원고로 정리. 실패하면 요약을 그대로 이어 붙임"""
     items = []
@@ -925,10 +929,15 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
         for x in g[:4]:                            # 같은 사안 여러 기사의 요약을 합쳐 한 번에 전하게
             if x["summary"] and x["summary"] not in sums:
                 sums.append(x["summary"])
-        items.append(f"[사안 {n}] 제목: {g[0]['title']}\n관련 기사 {len(g)}건 요약:\n" + "\n".join(sums or ["(요약 없음)"])
+        pub = g[0].get("pub")
+        try:
+            pub = pub if isinstance(pub, dt.datetime) else dt.datetime.fromisoformat(str(pub))
+            when = f" (작성 {pub.month}월 {pub.day}일)"
+        except Exception:
+            when = ""
+        items.append(f"[사안 {n}] 제목: {g[0]['title']}{when}\n관련 기사 {len(g)}건 요약:\n" + "\n".join(sums or ["(요약 없음)"])
                      + "\n" + _excerpts(g))
-    wd = "월화수목금토일"[now.weekday()]
-    intro = f"{now.month}월 {now.day}일 {wd}요일 {label}, 중수청 언론보도 브리핑입니다."
+    intro = intro_text(label, now)
     outro = closing_text(label, now, more)
     if ANTHROPIC_KEY:
         prompt = (
@@ -939,6 +948,10 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "요약과 기사 본문이 다르면 본문을 따른다. 본문에 없는 내용은 쓰지 않는다. '(제목 기준)' 요약은 제목에 적힌 사실만 전한다. "
             "요약의 '신설 중수청'은 '새로 출범한 중수청'으로 쓰고, '새로 생기는', '신설될', '출범할' 같은 미래 표현은 쓰지 않는다.\n"
             "[구성]\n"
+            "- 원고는 첫머리 문단으로 시작하고, 사안 문단들, 맺음말 문단 순서로 끝낸다. 첫머리를 뒤에 다시 쓰지 않는다.\n"
+            "- 기사 속 '오늘·어제·내일·이번 주' 같은 말은 기사 작성일 기준이다. 원고에서는 '25일'처럼 날짜로 바꿔 쓰고, "
+            f"'오늘'은 그 일이 정말 오늘({now.month}월 {now.day}일) 일어난 경우에만 쓴다.\n"
+            "- 한 사안의 내용을 다른 사안 문단에서 미리 말하거나 되풀이하지 않는다.\n"
             "- 사안 번호 순서대로, 사안 하나당 한 문단으로 전한다(같은 사안 안의 반응·발언은 그 문단 안에서). "
             "다만 한 사안 묶음 안에 서로 다른 일이 섞여 있으면 억지로 이어 붙이지 말고 별도 문단으로 나눈다. "
             "'첫 번째, 두 번째' 같은 순서 숫자는 쓰지 않는다. "
@@ -1698,18 +1711,46 @@ _MARK = re.compile(r"^\s*\[\s*사안\s*(\d+)\s*\]\s*")
 _LEAD = re.compile(r"^(?:(?:다음|마지막) 소식입니다[.,]?|이어서 전해 드립니다[.,]?|(?:먼저|이어서|한편|다음으로|마지막으로)(?:,|\s))\s*")
 
 
-def _parse_script(raw: str):
-    """대본 → (첫머리, [(사안번호, 문단)], 맺음말). '[사안 n]' 표시가 없으면 문단 순서로 번호를 붙임"""
+_INTRO_RE = re.compile(r"언론보도 브리핑입니다")
+
+
+def _fix_today(p: str, g: list, now: dt.datetime) -> str:
+    """기사 속 '오늘'을 그대로 옮긴 경우(11.26. 아침: 25일 증선위 의결을 '오늘 정례회의'로 읽음) 기사 작성일로 바꿈.
+    그 사안의 기사가 모두 오늘 이전에 쓰였을 때만 바꿈"""
+    days = []
+    for x in g:
+        try:
+            pub = x["pub"] if isinstance(x.get("pub"), dt.datetime) else dt.datetime.fromisoformat(str(x.get("pub")))
+            days.append(pub.astimezone(KST).date())
+        except Exception:
+            return p
+    if not days or max(days) >= now.date():
+        return p
+    d = max(days)
+    return re.sub(r"오늘(?=\s)", f"{d.day}일", p)
+
+
+def _parse_script(raw: str, intro_fixed: str = ""):
+    """대본 → (첫머리, [(사안번호, 문단)], 맺음말).
+    첫머리·맺음말은 위치가 아니라 내용으로 찾음(11.26. 아침: AI가 첫머리를 맨 뒤에 쓰고 첫 문단을 사안으로 시작해
+    '사안 1'이 첫머리로 읽히고 넘김말이 한 칸씩 밀림). 첫머리는 프로그램 문구(intro_fixed)를 씀.
+    '[사안 n]' 표시가 없으면 문단 순서로 번호를 붙임"""
     paras = [p.strip() for p in re.split(r"\n\s*\n", raw.strip()) if p.strip()]
     if len(paras) < 3:                             # 문단 구분이 없으면 줄 단위로
         paras = [p.strip() for p in raw.strip().split("\n") if p.strip()]
-    intro, outro, body = (paras[0] if paras else ""), (paras[-1] if len(paras) > 1 else ""), []
-    for k, p in enumerate(paras[1:-1], 1):
+    intro, outro, body = "", "", []
+    for p in paras:
+        if not _MARK.match(p) and "브리핑이었습니다" in p:
+            outro = p
+            continue
+        if not _MARK.match(p) and _INTRO_RE.search(p) and len(p) < 90:
+            intro = intro or p
+            continue
         m = _MARK.match(p)
         t = _MARK.sub("", p).strip()
         t = _LEAD.sub("", t, count=1).strip() or t   # AI가 넘김말을 썼으면 지우고 프로그램이 다시 붙임
-        body.append((int(m.group(1)) if m else k, t))
-    return intro, body, outro
+        body.append((int(m.group(1)) if m else len(body) + 1, t))
+    return (intro_fixed or intro), body, outro
 
 
 def _transitions(intro: str, body: list, outro: str) -> str:
@@ -1725,18 +1766,14 @@ def _transitions(intro: str, body: list, outro: str) -> str:
     return "\n\n".join([intro] + out + [outro])
 
 
-def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime, outro_fixed: str = ""):
+def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime, outro_fixed: str = "",
+                    intro_fixed: str = ""):
     """대본 문장과 카드 문구를 함께 검증해 문제 문장을 뺌 → (고친 대본, 고친 카드, 뺀 목록, 검증 여부)
     문단의 첫 문장이 빠지거나 절반 이상이 빠지면 앞뒤가 끊겨 오해를 부를 수 있어 그 문단을 통째로 뺌"""
-    intro, body, outro = _parse_script(raw_script)
-    if outro_fixed and "브리핑이었습니다" in outro:
+    intro, body, outro = _parse_script(raw_script, intro_fixed)
+    if outro_fixed:                               # 맺음말은 항상 프로그램 문구
         outro = outro_fixed
-    elif outro_fixed:                             # AI가 맺음말을 빠뜨렸으면 마지막 문단은 본문으로 돌리고 맺음말을 붙임
-        if outro:
-            m = _MARK.match(outro)
-            t = _LEAD.sub("", _MARK.sub("", outro).strip(), count=1).strip() or outro
-            body.append((int(m.group(1)) if m else (body[-1][0] if body else 1), t))
-        outro = outro_fixed
+    body = [(k, _fix_today(p, groups[k - 1] if 1 <= k <= len(groups) else [], now)) for k, p in body]
     claims, where, i = [], {}, 0
     for pi, (k, p) in enumerate(body):
         for si, s_ in enumerate(_split_sents(p)):
@@ -2242,7 +2279,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
             cards = [_card_fallback(g) for g in use[:CARD_MAX]] if CARD_ON else []
         # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
         lab = "오후" if label == "시험" and now.hour >= 12 else ("아침" if label == "시험" else label)
-        raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now, closing_text(lab, now, more))
+        raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now, closing_text(lab, now, more),
+                                                              intro_text(lab, now))
         warn = ("" if verified is True else "⚠️ <b>자동 검증 결과 불확실 · 공유 전 확인 필요</b>\n" if verified == "over"
                 else "⚠️ <b>자동 검증 실패 · 공유 전 확인 필요</b>\n")
         state["audio_verify"] = (state.get("audio_verify", []) + [[now.isoformat(), verified, removed]])[-10:]
