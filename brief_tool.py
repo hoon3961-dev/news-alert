@@ -62,8 +62,13 @@ def prepare(label="", hours=0, test=False):
         if r["url"] in seen_u:
             continue
         seen_u.add(r["url"])
+        body = (r.get("body") or "").strip()
+        words = [w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", re.sub(r"\[[^\]]*\]", " ", r["title"])) if w not in n._STOP]
+        hit = sum(1 for w in words if w in body) / max(1, len(words))
+        if body and hit < 0.4:                      # 본문 자리에 다른 기사·광고가 잡힌 경우(11.27. 세계일보) → 본문 없음으로
+            body = ""
         arts[f"a{k}"] = {"title": r["title"], "press": r["press"], "url": r["url"], "pub": r["pub"].isoformat(),
-                         "summary": r.get("summary") or "", "body": (r.get("body") or "").strip()}
+                         "summary": r.get("summary") or "", "body": body}
     out = {"label": label, "test": test, "now": now.isoformat(), "since": since.isoformat(), "cut": now.isoformat(),
            "briefing_day": not holiday, "intro": n.intro_text(label, now),
            "articles": arts,
