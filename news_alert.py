@@ -976,7 +976,9 @@ def audio_script(groups: list, label: str, since: dt.datetime, now: dt.datetime,
             "- 괄호, 따옴표, 대괄호, 기호(·, →, ~, /), 영문 약어는 쓰지 않는다. [단독] 표시는 읽지 않는다.\n"
             "[금지]\n"
             "- 제목·요약에 없는 사실, 숫자, 평가, 전망을 지어내지 않는다. 앵커의 개인 의견을 넣지 않는다. "
-            "'~한 셈입니다', '도마에 올랐습니다', '과제로 떠올랐습니다', '부상했습니다', '그쳤습니다'처럼 해석·평가를 덧붙이는 표현도 쓰지 않는다. "
+            "'~한 셈입니다', '도마에 올랐습니다', '과제로 떠올랐습니다', '부상했습니다', '그쳤습니다', '~할 전망입니다', '중요해질 것입니다'처럼 "
+            "해석·평가·전망을 덧붙이는 표현도 쓰지 않는다(기사에 나온 전망은 '○○는 ~할 것으로 내다봤습니다'처럼 누구의 말인지 밝힌다). "
+            "'후'와 '이후', '처음'과 '첫'처럼 같은 뜻의 말을 한 문장에 겹쳐 쓰지 않는다. "
             "요약이 '과제로 제기됨'이면 '과제로 제기됐습니다', 수치는 '~였습니다'처럼 있는 그대로 전한다.\n"
             "- 문장과 문장 사이의 인과·시간 관계를 지어내지 않는다. '이에 따라', '이 때문에', '같은 날', '이후'는 요약에 그 관계가 적혀 있을 때만 쓴다. "
             "날짜가 요약에 있으면 '같은 날' 대신 '23일'처럼 날짜를 그대로 쓴다. "
@@ -1096,6 +1098,8 @@ _SOUND = [  # 귀로 들을 때만 쓰는 소리 표기(원고에는 원래 표�
     (r"5\s?[·.]\s?18", "오일팔"), (r"4\s?[·.]\s?19", "사일구"), (r"6\s?[·.]\s?25", "육이오"),
     (r"12\s?[·.]\s?12", "십이 십이"), (r"12\s?[·.]\s?3(?!\d)", "십이 삼"), (r"3\s?[·.]\s?1절", "삼일절"),
     (r"(\d+)\s?·\s?(\d+)", r"\1 \2"),                                # 그 밖의 숫자·숫자
+    (r"(서울중앙|서울남부|서울북부|서울동부|서울서부|의정부|서울|부산|대구|광주|대전|수원|인천|울산|창원|춘천|청주|전주|제주)"
+     r"(지방중수청|중수청|지방공소청|공소청|고등공소청)", r"\1 \2"),         # 대전중수청 → 대전 중수청
     # 소수(4.2퍼센트 등): 숫자로 두면 음성 엔진이 '사 점 이 … 퍼센트'처럼 끊어 읽어 한글 소리로 붙여 씀(11.26. 지적)
     (r"(?<![\d.])(\d+)\.(\d+)(?![.\d])(?=\s?(?:퍼센트|%|배|포인트|%p|억|조|만|명|건|도|개월|년|kg|㎏|km|시간|초|분))",
      lambda m: _sino(m.group(1)) + "점" + "".join("영일이삼사오육칠팔구"[int(c)] for c in m.group(2))),
@@ -1168,8 +1172,11 @@ def _clauses(sent: str) -> list:
     """문장을 쉼표 단위로 나눔. 너무 짧은 조각(6자 미만)은 앞뒤와 합쳐 어색하게 끊기지 않게 함"""
     if COMMA_GAP <= 0:
         return [sent]
+    parts = re.split(r"(?<=,)\s+", sent)
+    if sum(1 for x in parts[:-1] if len(x) <= 12) >= 2:   # 회사·기관 이름 나열 등은 엔진이 자연스럽게 읽게 통째로
+        return [sent]
     out = []
-    for part in re.split(r"(?<=,)\s+", sent):
+    for part in parts:
         if out and (len(out[-1]) < 6 or len(part) < 6):
             out[-1] += " " + part
         else:
@@ -1682,6 +1689,7 @@ def verify_claims(claims: list, groups: list, now: dt.datetime):
         "이미 일어난 일을 미래로(또는 계획을 확정으로) 바꿈, 제목의 비유를 사실로 바꿈, 의견·추측을 사실로 단정.\n"
         "- 원문 어디에도 없는 새 사실(숫자·사건·인물·발언)을 덧붙임.\n"
         "- 기본 사실과 어긋남.\n"
+        "- 원문에 없는 전망·평가를 덧붙임(예: '~이 중요해질 전망입니다', '과제로 떠올랐습니다'). 원문에 그 전망이 누구의 말로 있으면 틀린 것이 아님.\n"
         "틀린 것이 아닌 경우(표시 금지):\n"
         "- 원문 정보를 줄이거나 생략함(예: 기간·조건을 빼고 핵심만 말함). 빠진 정보는 오류가 아니다.\n"
         "- 표현만 다르고 뜻이 같음, 쉬운 말로 풀어씀, 여러 문장을 합침, 존댓말 어미, 넘김말.\n"
@@ -1736,14 +1744,19 @@ _LEAD = re.compile(r"^(?:(?:다음|마지막) 소식입니다[.,]?|이어서 전
 _INTRO_RE = re.compile(r"언론보도 브리핑입니다")
 
 
-def _plain(p: str) -> str:
+def _plain(p: str, src: str = "") -> str:
     """'~에 그쳤습니다', '~에 불과했습니다'처럼 평가가 섞인 끝맺음을 있는 그대로('~였습니다')로 바꿈(지시문으로 막아도 자주 나옴)"""
     def sub(m):
         w = m.group(1)
         last = w[-1]
         batchim = "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 != 0
         return w + ("이었습니다" if batchim or last.isdigit() else "였습니다")
-    return re.sub(r"(\S+?)(?:에|에 불과)\s*(?:그쳤습니다|불과했습니다)", sub, p)
+    p = re.sub(r"(\S+?)(?:에|에 불과)\s*(?:그쳤습니다|불과했습니다)", sub, p)
+    # 문장 첫머리의 인과 연결어는 원문에 그 말이 없으면 지움(AI가 관계를 지어내는 일이 잦음)
+    for w in ("그래서", "따라서", "이 때문에", "이에 따라"):
+        if w not in src:
+            p = re.sub(r"(^|(?<=[.?!]\s))" + w + r",?\s+", r"\1", p)
+    return p
 
 
 def _fix_today(p: str, g: list, now: dt.datetime) -> str:
@@ -1805,7 +1818,8 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
     intro, body, outro = _parse_script(raw_script, intro_fixed)
     if outro_fixed:                               # 맺음말은 항상 프로그램 문구
         outro = outro_fixed
-    body = [(k, _plain(_fix_today(p, groups[k - 1] if 1 <= k <= len(groups) else [], now))) for k, p in body]
+    body = [(k, _plain(_fix_today(p, groups[k - 1] if 1 <= k <= len(groups) else [], now),
+                       _src_text(groups[k - 1]) if 1 <= k <= len(groups) else "")) for k, p in body]
     claims, where, i = [], {}, 0
     for pi, (k, p) in enumerate(body):
         for si, s_ in enumerate(_split_sents(p)):
