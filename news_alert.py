@@ -1809,6 +1809,9 @@ _LEAD = re.compile(r"^(?:(?:다음|마지막) 소식입니다[.,]?|이어서 전
 _INTRO_RE = re.compile(r"언론보도 (?:\S+ )?브리핑입니다")
 
 
+FIXES: list = []                                   # 보내기 전 자동 교정 기록(점검 결과 한 줄에 씀)
+
+
 def _plain(p: str, src: str = "") -> str:
     """'~에 그쳤습니다', '~에 불과했습니다'처럼 평가가 섞인 끝맺음을 있는 그대로('~였습니다')로 바꿈(지시문으로 막아도 자주 나옴)"""
     def sub(m):
@@ -1816,11 +1819,14 @@ def _plain(p: str, src: str = "") -> str:
         last = w[-1]
         batchim = "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 != 0
         return w + ("이었습니다" if batchim or last.isdigit() else "였습니다")
+    p0 = p
     p = re.sub(r"(\S+?)(?:에|에 불과)\s*(?:그쳤습니다|불과했습니다)", sub, p)
     # 문장 첫머리의 인과 연결어는 원문에 그 말이 없으면 지움(AI가 관계를 지어내는 일이 잦음)
     for w in ("그래서", "따라서", "이 때문에", "이에 따라"):
         if w not in src:
             p = re.sub(r"(^|(?<=[.?!]\s))" + w + r",?\s+", r"\1", p)
+    if p != p0:
+        FIXES.append("표현")
     return p
 
 
@@ -1837,7 +1843,10 @@ def _fix_today(p: str, g: list, now: dt.datetime) -> str:
     if not days or max(days) >= now.date():
         return p
     d = max(days)
-    return re.sub(r"오늘(?=\s)", f"{d.day}일", p)
+    q = re.sub(r"오늘(?=\s)", f"{d.day}일", p)
+    if q != p:
+        FIXES.append("날짜")
+    return q
 
 
 def _parse_script(raw: str, intro_fixed: str = ""):
@@ -2315,12 +2324,55 @@ def send_cards(paths: list, caption: str, reply_to: int = 0) -> None:
     r.raise_for_status()
 
 
+def refill_bodies(use: list) -> tuple:
+    """보내기 전 점검 ①: 본문 없이 제목만 있는 사안은 본문을 한 번 더 찾음(페이지 데이터·네이버 뉴스 사본).
+    → (본문 있는 기사 수, 전체 기사 수, 끝내 제목뿐인 사안 번호 목록)"""
+    title_only = []
+    for n, g in enumerate(use, 1):
+        if not any((x.get("body") or "").strip() for x in g):
+            for x in g[:3]:
+                try:
+                    b = fetch_body(x)
+                except Exception:
+                    b = ""
+                if b:
+                    x["body"] = b
+                    break
+        if not any((x.get("body") or "").strip() for x in g):
+            title_only.append(n)
+            for x in g:
+                x["_title_only"] = True
+    nb = sum(1 for g in use for x in g if (x.get("body") or "").strip())
+    return nb, sum(len(g) for g in use), title_only
+
+
+def thicken_cards(cards: list, groups: list) -> None:
+    """보내기 전 점검 ②: 요점이 1개뿐인 카드는 같은 사안 다른 기사들의 요약 문장으로 보충(뒤이은 원문 검증을 거침)"""
+    for c, g in zip(cards, groups):
+        if len(c["points"]) >= 2:
+            continue
+        have = [c["headline"]] + c["points"]
+        for x in g:
+            for sent in re.split(r"(?<=[.!?])\s+|(?<=함)\s+|(?<=임)\s+|(?<=됨)\s+", tidy_summary(x.get("summary") or "")):
+                sent = re.sub(r"\s*\((?:제목 기준|사진 기사)\)", "", sent).strip(" .")
+                if len(sent) < 8 or _META_PT.search(sent) or any(similar(sent, h, 0.5) for h in have):
+                    continue
+                c["points"].append(_cut(sent, 44))
+                have.append(sent)
+                FIXES.append("카드 보충")
+                if len(c["points"]) >= 3:
+                    break
+            if len(c["points"]) >= 3:
+                break
+
+
 def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int, reply_to: int,
                   cards: list = None, warn: str = "") -> None:
     show = use[:CARD_MAX]
     more += len(use) - len(show)
     cards = cards if cards is not None else card_copy(show, now)
-    sources = [g[0]["press"] + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for g in show]
+    sources = [g[0]["press"] + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
+               + (" · 본문 미확인(제목 기준)" if any(x.get("_title_only") for x in g) else "") for g in show]
     wd = "월화수목금토일"[now.weekday()]
     pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
                        f"{label} 브리핑", n_art, more)
@@ -2381,6 +2433,8 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         merged = [[a for i in c for a in groups[i]] for c in audio_cluster(groups)]
         merged.sort(key=lambda g: -len(g))   # AI가 준 순서와 무관하게 기사가 많은 사안부터(파이썬 정렬은 안정적이라 동수면 AI 순서 유지)
         use, more = merged[:AUDIO_MAX], max(len(merged) - AUDIO_MAX, 0)
+        FIXES.clear()
+        n_body, n_all, title_only = refill_bodies(use)
         raw_script = audio_script(use, "오후" if label == "시험" and now.hour >= 12 else
                                   ("아침" if label == "시험" else label), since, now, more)
         try:
@@ -2388,6 +2442,7 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         except Exception as e:
             AUDIO_ERR.append(f"카드 문구: {type(e).__name__}: {str(e)[:150]}")
             cards = [_card_fallback(g) for g in use[:CARD_MAX]] if CARD_ON else []
+        thicken_cards(cards, use[:CARD_MAX])
         # 보내기 전 원문 대조 검증: 원문과 다르거나 근거 없는 문장은 음성·카드에서 빼고 따로 알림
         lab = "오후" if label == "시험" and now.hour >= 12 else ("아침" if label == "시험" else label)
         raw_script, cards, removed, verified = verify_briefing(raw_script, cards, use, now, closing_text(lab, now, more),
@@ -2399,11 +2454,19 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
         spoken = speakable(raw_script, sound=True) # 음성용: 소리 나는 대로(영장→영짱 등)
         lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})"
                  + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for n, g in enumerate(use, 1)]
+        n_rewrite = sum(1 for e_ in AUDIO_ERR if "불일치" in e_)
+        check = (f"🔎 자동 점검: 본문 확인 {n_body}/{n_all}건 · "
+                 + ("원문 검증 통과" if verified is True and not removed else
+                    f"원문 검증에서 {len(removed)}개 뺌" if verified is True else "원문 검증 불확실")
+                 + f" · 자동 교정 {len(FIXES) + n_rewrite}건"
+                 + (f"\n⚠️ 본문 미확인(제목 기준) 사안: {', '.join(map(str, title_only))}번" if title_only else ""))
         caption = warn + head + f"{len(recs)}건 · {len(use)}개 사안\n" + "\n".join(lines)
         if more:
             caption += f"\n외 {more}개 사안"
-        if len(caption) > 1000:                    # 텔레그램 설명란 1,024자 제한
-            caption = caption[:990].rsplit("\n", 1)[0] + "\n…"
+        caption += "\n" + check
+        if len(caption) > 1000:                    # 텔레그램 설명란 1,024자 제한(점검 줄은 남김)
+            body_ = caption[:-len(check)]
+            caption = body_[:990 - len(check)].rsplit("\n", 1)[0] + "\n…\n" + check
         # 원고 보관(최근 10회, state.json의 audio_scripts) → 나중에 글로 다시 볼 수 있게
         state["audio_scripts"] = (state.get("audio_scripts", []) + [[now.isoformat(), label, script]])[-10:]
         path = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
