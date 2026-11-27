@@ -2681,6 +2681,40 @@ def render_cards(pages: list, folder: str, height: int = 1350) -> list:
     return paths
 
 
+CARD_SEND = (os.getenv("CARD_SEND") or "pdf").strip().lower()   # pdf: 카드 전체를 PDF 하나로(표지가 미리보기) | album: 사진 묶음
+
+
+def send_cards_pdf(paths: list, caption: str, name: str, reply_to: int = 0) -> bool:
+    """카드 이미지를 PDF 한 개로 묶어 보냄. 표지(1장)를 미리보기로 붙임 → 누르면 텔레그램 안에서 장을 넘겨 봄(11.28. 사용자 선택)"""
+    try:
+        from PIL import Image
+        folder = os.path.dirname(paths[0])
+        pdf, thumb = os.path.join(folder, name), os.path.join(folder, "thumb.jpg")
+        imgs = [Image.open(p).convert("RGB") for p in paths]
+        imgs[0].save(pdf, "PDF", save_all=True, append_images=imgs[1:], resolution=144, quality=88)
+        t = imgs[0].copy()
+        t.thumbnail((320, 320))
+        t.save(thumb, "JPEG", quality=85)
+    except Exception as e:
+        print(f"[카드 PDF 만들기 실패 → 사진 묶음으로] {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+    data = {"chat_id": TG_CHAT.strip(), "caption": caption, "parse_mode": "HTML"}
+    if reply_to:
+        data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendDocument"
+    for _ in range(2):
+        with open(pdf, "rb") as f, open(thumb, "rb") as th:
+            r = requests.post(url, data=data, files={"document": (name, f, "application/pdf"),
+                                                     "thumbnail": ("thumb.jpg", th, "image/jpeg")}, timeout=180)
+        if r.ok:
+            print(f"카드뉴스 PDF 발송: {len(paths)}장, {os.path.getsize(pdf) // 1024}KB")
+            return True
+        print(f"[카드 PDF 발송 오류] {r.status_code}: {r.text[:200]}", file=sys.stderr)
+        data.pop("parse_mode", None)
+        data["caption"] = html.unescape(re.sub(r"<[^>]+>", "", caption))
+    return False
+
+
 def send_cards(paths: list, caption: str, reply_to: int = 0) -> None:
     media = [{"type": "photo", "media": f"attach://c{i}"} for i in range(len(paths))]
     media[0].update({"caption": caption, "parse_mode": "HTML"})
@@ -2758,16 +2792,19 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
     folder = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"cards_{now:%m%d_%H%M}")
     if CARD_STYLE == "v2":                         # 정사각: 표지·목차·사안(시각화 포함 사안당 최대 2장)·마무리
         import cards_v2
-        pages = cards_v2.build(cards, sources, now, label, since or now - dt.timedelta(hours=14), until or now)
+        pages = cards_v2.build(cards, sources, now, label, since or now - dt.timedelta(hours=14), until or now,
+                               fit=(CARD_SEND != "pdf"))   # PDF는 장수 제한이 없어 시각화를 빼지 않음
         paths = render_cards(pages, folder, 1080)
     else:
         pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
                            f"{label} 브리핑", n_art, more)
         paths = render_cards(pages, folder)
     caption = (warn + f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용) · 사안 {len(cards)}개 · {len(paths)}장\n"
-               "사안별 기사 링크는 아래 메시지에 모두 있습니다.")
-    for k in range(0, len(paths), 10):             # 텔레그램 앨범은 한 번에 10장까지
-        send_cards(paths[k:k + 10], caption if k == 0 else f"🗂 {label} 카드뉴스 (이어서)", reply_to)
+               + ("파일을 누르면 카드 전체를 넘겨 볼 수 있습니다.\n" if CARD_SEND == "pdf" else "")
+               + "사안별 기사 링크는 아래 메시지에 모두 있습니다.")
+    if not (CARD_SEND == "pdf" and send_cards_pdf(paths, caption, f"중수청_{label}_카드뉴스_{now:%m%d}.pdf", reply_to)):
+        for k in range(0, len(paths), 10):         # 텔레그램 앨범은 한 번에 10장까지
+            send_cards(paths[k:k + 10], caption if k == 0 else f"🗂 {label} 카드뉴스 (이어서)", reply_to)
     # 설명란은 1,024자 제한이라 링크가 잘렸음 → 모든 기사 링크를 따로 보냄(4,096자씩 나눔)
     e = html.escape
     blocks = []

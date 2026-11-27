@@ -364,11 +364,12 @@ def fit_album(cards: list) -> list:
             print(f"카드 10장 맞춤: '{c.get('headline', '')}' 시각화 장 뺌")
             c.pop("viz")
     return cards
-def build(cards: list, sources: list, now, label: str, since, until) -> list:
+def build(cards: list, sources: list, now, label: str, since, until, fit: bool = True) -> list:
     """cards: 사안 카드 목록, sources: 사안별 출처 문구. 반환: 페이지 HTML 목록(표지·목차·사안·마무리)"""
     date_label = f"{now:%m. %d.}({WD[now.weekday()]}) {label}"
     period = (f"{since:%Y. %m. %d.}({WD[since.weekday()]}) {since:%H:%M}", f"{until:%Y. %m. %d.}({WD[until.weekday()]}) {until:%H:%M}")
-    cards = fit_album(cards)
+    if fit:
+        cards = fit_album(cards)
     n_pages = 3 + sum(2 if (c.get("viz") or {}).get("type") in RENDER else 1 for c in cards)
     pages = [cover((f"{now:%m.%d.}", WD[now.weekday()]), label, period),
              toc(date_label, f"2 / {n_pages}", [(c.get("tag", "기타"), c["headline"]) for c in cards])]

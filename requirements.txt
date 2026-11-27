@@ -4,3 +4,4 @@ googlenewsdecoder>=0.2
 edge-tts>=7.0
 holidays>=0.50
 imageio-ffmpeg>=0.5
+Pillow>=10.0

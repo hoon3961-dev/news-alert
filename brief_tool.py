@@ -134,7 +134,7 @@ def check(path):
     n_pg = 3 + sum(2 if (c.get("viz") or {}).get("type") in cards_v2.RENDER else 1 for c in cs)
     if len(cs) > n.CARD_MAX:
         probs.append(f"카드: 사안은 {n.CARD_MAX}개까지(지금 {len(cs)}개)")
-    elif n_pg > cards_v2.ALBUM_MAX:
+    elif n_pg > cards_v2.ALBUM_MAX and n.CARD_SEND != "pdf":   # PDF로 보낼 땐 장수 제한 없음
         probs.append(f"카드: 표지·목차·마무리 포함 {n_pg}장 → 10장 넘음. 덜 중요한 사안의 viz를 빼서 10장 이내로"
                      "(그대로 두면 뒤 사안 시각화부터 자동으로 빠짐)")
     for k, c in enumerate(cs, 1):
