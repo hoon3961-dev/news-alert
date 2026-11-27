@@ -835,9 +835,10 @@ def page_nodes(arts: list, now: dt.datetime, intro: str) -> list:
     for n, g in enumerate(group_articles(arts), 1):
         a = g[0]
         nodes.append({"tag": "hr"})
-        nodes.append({"tag": "h4", "children": [f"{n}. {clean_title(a['title'])}"]})
+        # 제목은 본문과 같은 크기의 굵은 글씨(h4는 즉시 보기에서 본문보다 훨씬 크게 보임, 11.27. 지적)
         meta = f"{press_name(a['press'])} · {fmt_time(a['pub'], now)}" + (f" · 같은 내용 {len(g) - 1}건" if len(g) > 1 else "")
-        para = [{"tag": "em", "children": [meta]}]
+        para = [{"tag": "strong", "children": [f"{n}. {clean_title(a['title'])}"]}, {"tag": "br"},
+                {"tag": "em", "children": [meta]}]
         summ = clean_summary(a.get("summary") or "", title=a["title"])
         if summ:
             para += [{"tag": "br"}, summ]
