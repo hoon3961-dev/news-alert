@@ -146,5 +146,8 @@ check("카드 사안 최대 7개(표지·목차·마무리 포함 10장)", n.CAR
 check("발음: 내란 특별수사본부 붙여 읽기", "내란특별수사본부를" in n.speakable("내란 특별수사본부를 출범합니다.", sound=True))
 check("발음: 내란 특수본 붙여 읽기", "내란특수본" in n.speakable("내란 특수본이 출범합니다.", sound=True))
 check("원고 글은 띄어쓰기 그대로", "내란 특별수사본부" in n.speakable("내란 특별수사본부를 출범합니다."))
+check("모음: 제목 끝 언론사 꼬리 떼기", n.clean_title("중수청, 경비 지적에 해명 - 머니투데이") == "중수청, 경비 지적에 해명")
+check("모음: 요약 안내문·송고 지우기", "송고" not in n.clean_summary("후보 재산 신고 전체 내용을 이해하기 위해서는 기사 본문과 함께 읽어야 합니다. 송고…"))
+check("모음: 바이라인 지우기", "기자]" not in n.clean_summary("[헤럴드경제=최의종 기자] 내란 특수본이 다음 달 출범한다."))
 print(f"\n{'모두 통과' if not FAILS else '실패 ' + str(len(FAILS)) + '건: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)

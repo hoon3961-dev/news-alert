@@ -784,6 +784,70 @@ def from_record(r: dict) -> dict:
     return r
 
 
+# ── 모음 페이지 글 다듬기(11.27. 사용자 지적: 글자·줄간격이 정리 안 돼 보임) ──
+_JUNK = [
+    r"\[[^\]]{0,20}=[^\]]{0,20}기자\]",                     # [헤럴드경제=최의종 기자]
+    r"\([^)]{0,20}=[^)]{0,20}\)\s*[가-힣]{2,4}\s*기자\s*=?",   # (서울=연합뉴스) 홍길동 기자 =
+    r"[가-힣]{2,4}\s*기자\s*=",                                # 홍길동 기자 =
+    r"(?:등록|입력|수정|송고)\s*:?\s*\d{4}[.\-]\s?\d{1,2}[.\-]\s?\d{1,2}\.?\s*(?:\d{1,2}:\d{2}(?::\d{2})?)?",
+    r"전체 내용을 이해하기 위해서는[^.]*\.?", r"송고\s*…?", r"무단\s*전재[^.]*\.?", r"재배포\s*금지",
+    r"\(?(?:제목 기준|사진 기사)[^)]*\)?",
+    r"ⓒ\s*\S+(?:\s+[가-힣]{2,4}\s*기자)?", r"\d{4}\.\d{1,2}\.\d{1,2}\.?(?=\s*ⓒ|\s*$)", r"^광고\s+",
+    r"\[[^\]]{0,15}=[^\]]{0,15}\]",                             # [서울=뉴시스]
+]
+
+
+def clean_title(t: str, press: str = "") -> str:
+    """제목 끝 ' - 머니투데이', ' | 연합뉴스' 같은 언론사 꼬리 떼기"""
+    t = re.sub(r"\s+[-|ㅣ–—]\s+[^-|ㅣ–—]{1,20}$", "", (t or "").strip()) if re.search(r"\s[-|ㅣ–—]\s", t or "") else (t or "").strip()
+    return t.strip()
+
+
+def clean_summary(t: str, limit: int = 170, title: str = "") -> str:
+    """요약 다듬기: 바이라인·등록일시·사진설명·안내문 지우고, 제목 되풀이·부제 덩어리 빼고, 문장 끝에서 자름"""
+    t = tidy_summary(t or "")
+    for pat in _JUNK:
+        t = re.sub(pat, " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    tt = clean_title(title)
+    if tt and t.startswith(tt):                    # 본문 첫머리가 제목 되풀이
+        t = t[len(tt):].strip()
+    first = re.search(r"(?:다|임|음|함|됨)\.(?=\s|$|\d)", t)   # 첫 문장 앞의 부제 덩어리('…'로 이어진 짧은 구절) 빼기
+    if first:
+        head = t[:first.start()]
+        cuts = [m.end() for m in re.finditer(r"…|\.\.\.|기자(?=\s)", head)]
+        if cuts and len(t) - cuts[-1] >= 30:
+            t = t[cuts[-1]:].strip()
+    t = re.sub(r"…\s*\.", "…", t).strip(" ·-")
+    t = re.sub(r"\s+\.$", "", t).strip(" …")
+    if len(t) <= limit:
+        return t + ("" if re.search(r"[.!?다임음함됨]$", t) or not t else "…")
+    cut = t[:limit]
+    m = list(re.finditer(r"(?:다|임|음|함|됨)\.(?=\s)|[.!?](?=\s)", cut))
+    if m and m[-1].end() >= 60:
+        return cut[:m[-1].end()]
+    return cut.rsplit(" ", 1)[0] + "…"
+
+
+def page_nodes(arts: list, now: dt.datetime, intro: str) -> list:
+    """사안마다 한 덩어리: 굵은 제목 / 언론사·시각(기울임) / 요약 / 기사 링크 — 사안 사이는 가로줄"""
+    nodes = [{"tag": "p", "children": [{"tag": "em", "children": [intro]}]}]
+    for n, g in enumerate(group_articles(arts), 1):
+        a = g[0]
+        nodes.append({"tag": "hr"})
+        nodes.append({"tag": "h4", "children": [f"{n}. {clean_title(a['title'])}"]})
+        meta = f"{press_name(a['press'])} · {fmt_time(a['pub'], now)}" + (f" · 같은 내용 {len(g) - 1}건" if len(g) > 1 else "")
+        para = [{"tag": "em", "children": [meta]}]
+        summ = clean_summary(a.get("summary") or "", title=a["title"])
+        if summ:
+            para += [{"tag": "br"}, summ]
+        para += [{"tag": "br"}, {"tag": "a", "attrs": {"href": a["url"]}, "children": ["▶ 기사 보기"]}]
+        for x in g[1:6]:
+            para += [" · ", {"tag": "a", "attrs": {"href": x["url"]}, "children": [press_name(x["press"])]}]
+        nodes.append({"tag": "p", "children": para})
+    return nodes
+
+
 def telegraph_page(arts: list, now: dt.datetime, title: str, intro: str) -> str:
     """모음을 텔레그래프(telegra.ph) 웹페이지 한 장으로 → 주소. 텔레그램 안에서 바로 열림(Instant View).
     주소를 아는 사람만 볼 수 있지만 비공개는 아님(공개된 기사 요약만 담음)"""
@@ -792,25 +856,13 @@ def telegraph_page(arts: list, now: dt.datetime, title: str, intro: str) -> str:
     if not token:
         r = requests.get(f"{api}/createAccount", params={"short_name": "news-alert", "author_name": "언론보도 모니터링"}, timeout=20)
         token = r.json()["result"]["access_token"]
-    nodes = [{"tag": "p", "children": [{"tag": "em", "children": [intro]}]}]
-    for n, g in enumerate(group_articles(arts), 1):
-        a = g[0]
-        nodes.append({"tag": "h4", "children": [f"{n}. {a['title']}"]})
-        nodes.append({"tag": "p", "children": [{"tag": "em", "children": [f"{a['press']} · {fmt_time(a['pub'], now)}"]}]})
-        if a.get("summary"):
-            nodes.append({"tag": "p", "children": [a["summary"]]})
-        links = [{"tag": "a", "attrs": {"href": a["url"]}, "children": ["▶ 기사 보기"]}]
-        if len(g) > 1:
-            links.append(f"  (같은 내용 {len(g) - 1}건: ")
-            for j, x in enumerate(g[1:6]):
-                links += ([" · "] if j else []) + [{"tag": "a", "attrs": {"href": x["url"]}, "children": [x["press"]]}]
-            links.append(")")
-        nodes.append({"tag": "p", "children": links})
+    nodes = page_nodes(arts, now, intro)
     content = json.dumps(nodes, ensure_ascii=False)
     if len(content.encode()) > 60000:              # 페이지 용량 제한(64KB) 대비: 요약을 줄임
         for nd in nodes:
-            if nd["tag"] == "p" and nd["children"] and isinstance(nd["children"][0], str) and len(nd["children"][0]) > 120:
-                nd["children"][0] = nd["children"][0][:120] + "…"
+            for i, ch in enumerate(nd.get("children") or []):
+                if isinstance(ch, str) and len(ch) > 100:
+                    nd["children"][i] = ch[:100] + "…"
         content = json.dumps(nodes, ensure_ascii=False)
     r = requests.post(f"{api}/createPage", data={"access_token": token, "title": title[:250], "author_name": "언론보도 모니터링",
                                                  "content": content, "return_content": "false"}, timeout=30)
