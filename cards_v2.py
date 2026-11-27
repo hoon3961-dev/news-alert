@@ -130,10 +130,12 @@ def text_card(date_label: str, pg: str, no: int, c: dict, src: str) -> str:
                        f"<div style='height:100%;width:{w}%;background:#fff;border-radius:5px'></div></div>")
             except (TypeError, ValueError):
                 pass
+        # 읽는 순서대로: 무엇인지(설명) → 숫자. 비율 막대는 숫자 아래
+        lab = (f"<div style='font-size:21px;font-weight:700;opacity:.85;margin-bottom:6px'>{t(st['label'])}</div>" if st.get("label") else "")
         statb = (f"<div style='margin-top:22px;display:flex;align-items:center;gap:30px;background:linear-gradient(120deg,{B1},{B2});color:#fff;border-radius:24px;padding:22px 32px'>"
-                 f"<div style='flex:none;white-space:nowrap'>" + (f"<div style='font-size:21px;font-weight:700;opacity:.85'>{t(st['label'])}</div>" if st.get('label') else '') + f""
-                 f"<span style='font-size:88px;font-weight:900;line-height:1'>{t(st['big'])}</span><span style='font-size:34px;font-weight:700;margin-left:4px'>{t(st.get('unit'))}</span></div>"
-                 f"<div style='flex:1;font-size:27px;line-height:1.45'>{t(st.get('desc'))}{bar}</div></div>")
+                 f"<div style='flex:1;min-width:0'>{lab}<div style='font-size:29px;font-weight:700;line-height:1.4'>{t(st.get('desc'))}</div></div>"
+                 f"<div style='flex:none;white-space:nowrap;text-align:right;min-width:240px'><span style='font-size:88px;font-weight:900;line-height:1'>{t(st['big'])}</span>"
+                 f"<span style='font-size:34px;font-weight:700;margin-left:4px'>{t(st.get('unit'))}</span>{bar}</div></div>")
     fs = 33 if has else 38
     # 숫자 칸은 그 숫자를 말한 문장 바로 아래에 둠: stat.after = "lead"(기본) 또는 요점 번호(1부터)
     after = str(st.get("after") or "lead") if has else ""
