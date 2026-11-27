@@ -838,12 +838,14 @@ def page_nodes(arts: list, now: dt.datetime, intro: str) -> list:
         nodes.append({"tag": "hr"})
         # 제목은 본문과 같은 크기의 굵은 글씨(h4는 즉시 보기에서 본문보다 훨씬 크게 보임, 11.27. 지적)
         meta = f"{press_name(a['press'])} · {fmt_time(a['pub'], now)}" + (f" · 같은 내용 {len(g) - 1}건" if len(g) > 1 else "")
-        para = [{"tag": "strong", "children": [f"{n}. {clean_title(a['title'])}"]}, {"tag": "br"},
-                {"tag": "em", "children": [meta]}]
+        # 언론사·시각 줄은 작고 흐린 회색으로: 텔레그래프는 글자색·크기 지정이 없어 '그림 설명(figcaption)' 모양을 빌림(11.27.)
+        nodes.append({"tag": "p", "children": [{"tag": "strong", "children": [f"{n}. {clean_title(a['title'])}"]}]})
+        nodes.append({"tag": "figure", "children": [{"tag": "figcaption", "children": [meta]}]})
+        para = []
         summ = clean_summary(a.get("summary") or "", title=a["title"])
         if summ:
-            para += [{"tag": "br"}, summ]
-        para += [{"tag": "br"}, {"tag": "a", "attrs": {"href": a["url"]}, "children": ["▶ 기사 보기"]}]
+            para += [summ, {"tag": "br"}]
+        para += [{"tag": "a", "attrs": {"href": a["url"]}, "children": ["▶ 기사 보기"]}]
         for x in g[1:6]:
             para += [" · ", {"tag": "a", "attrs": {"href": x["url"]}, "children": [press_name(x["press"])]}]
         nodes.append({"tag": "p", "children": para})
