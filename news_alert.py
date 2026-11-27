@@ -708,7 +708,10 @@ def dedupe(arts: list, seen: dict, state: dict, now: dt.datetime) -> list:
             drop("중복(같은 주소·비슷한 제목)", a["press"], a["title"], now)
             continue
         # 언론사마다 제목을 다르게 단 같은 사건(예: '구본현 구속 기소' 7건) — AI 판단이 안 될 때도 걸러지게
-        if not is_scoop(a["title"]) and any(same_story(a["title"], t) for t in recent + [x["title"] for x in out]):
+        matches = [] if is_scoop(a["title"]) else [t for t in recent + [x["title"] for x in out] if same_story(a["title"], t)]
+        if matches and a.get("priority") and is_followup(a["title"], matches):
+            matches = []   # 중수청 기사: 앞 기사들에 없던 진행 단계(영장·구속·기소 등)가 나오면 후속 보도로 보고 보냄
+        if matches:
             seen[a["key"]] = now.isoformat()
             drop("중복(같은 사건, 핵심 낱말 겹침)", a["press"], a["title"], now)
             continue
@@ -733,6 +736,26 @@ def story_terms(t: str) -> set:
         if len(w2) >= 2 and w2 not in _STORY_STOP and not w2.isdigit():
             out.add(w2)
     return out
+
+
+# 사건 진행 단계 낱말 — 같은 사건이라도 새 단계가 나오면 후속 보도
+_STAGES = {
+    "압수수색": ("압수수색", "압색"), "소환": ("소환", "출석", "조사받"), "체포": ("체포",),
+    "영장": ("영장",), "구속": ("구속",), "기각": ("기각",), "발부": ("발부",), "기소": ("기소",),
+    "송치": ("송치",), "선고": ("선고", "판결", "실형", "집행유예", "무죄"), "석방": ("석방", "보석"),
+    "착수": ("착수", "입건"), "출범": ("출범", "개청"), "임명": ("임명", "지명", "내정"),
+}
+
+
+def stages(t: str) -> set:
+    t = re.sub(r"불구속", "", t or "")
+    return {k for k, ws in _STAGES.items() if any(w in t for w in ws)}
+
+
+def is_followup(title: str, earlier: list) -> bool:
+    """앞서 보낸 같은 사건 기사들에 없던 진행 단계가 제목에 나오면 후속 보도"""
+    seen_st = set().union(*(stages(t) for t in earlier)) if earlier else set()
+    return bool(stages(title) - seen_st)
 
 
 def same_story(t1: str, t2: str) -> bool:
