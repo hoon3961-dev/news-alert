@@ -2681,7 +2681,7 @@ def render_cards(pages: list, folder: str, height: int = 1350) -> list:
     return paths
 
 
-CARD_SEND = (os.getenv("CARD_SEND") or "pdf").strip().lower()   # pdf: 카드 전체를 PDF 하나로(표지가 미리보기) | album: 사진 묶음
+CARD_SEND = (os.getenv("CARD_SEND") or "album").strip().lower()   # album: 사진 묶음(기본, 11.28. 사용자: PDF 방식 거절) | pdf
 
 
 def send_cards_pdf(paths: list, caption: str, name: str, reply_to: int = 0) -> bool:
