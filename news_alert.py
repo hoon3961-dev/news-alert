@@ -1946,7 +1946,7 @@ def to_voice(mp3: str) -> str:
         return ""
 
 
-AUDIO_FORMAT = (os.getenv("AUDIO_FORMAT") or "voice").strip().lower()   # voice(음성 메시지) | music(음악 파일)
+AUDIO_FORMAT = (os.getenv("AUDIO_FORMAT") or "music").strip().lower()   # music(음악 파일, 11.27. 사용자 선택: ⏮로 처음부터) | voice(음성 메시지)
 
 
 def send_audio(path: str, caption: str, title: str, fmt: str = "") -> int:
