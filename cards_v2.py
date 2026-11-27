@@ -111,7 +111,7 @@ def toc(date_label: str, pg: str, items: list) -> str:
                  f"<div style='flex:1;min-width:0;font-size:{fs}px;font-weight:700;line-height:1.3;color:{DEEP}'>{t(hl)}</div>"
                  f"<div style='flex:none;width:120px;text-align:right;font-size:22px;font-weight:500;color:{SUB}'>{t(tag)}</div></div>")
     return shell(date_label, pg,
-                 f"<h1 style='text-align:center;font-size:72px;font-weight:900;color:{DEEP}'>오늘의 언론보도</h1>"
+                 f"<h1 style='text-align:center;font-size:72px;font-weight:900;color:{DEEP}'>주요 보도 사안</h1>"
                  f"<div style='flex:1;margin-top:18px;display:flex;flex-direction:column'>{rows}</div>", "40px 52px 28px")
 
 
