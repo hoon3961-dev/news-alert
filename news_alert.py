@@ -892,11 +892,15 @@ def format_messages(arts: list, now: dt.datetime, header: str, collapse: bool = 
     return msgs
 
 
-def send_telegram(text: str, silent: bool = False, preview: bool = False) -> None:
+def send_telegram(text: str, silent: bool = False, preview: bool = False, preview_url: str = "") -> None:
+    """preview_url: 본문에 주소를 쓰지 않고 그 주소의 미리보기 카드(즉시 보기 버튼 포함)만 붙임"""
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     chat = TG_CHAT.strip()
-    payload = {"chat_id": chat, "text": text, "parse_mode": "HTML",
-               "disable_web_page_preview": not preview, "disable_notification": silent}
+    payload = {"chat_id": chat, "text": text, "parse_mode": "HTML", "disable_notification": silent}
+    if preview_url:
+        payload["link_preview_options"] = {"url": preview_url, "prefer_large_media": False}
+    else:
+        payload["disable_web_page_preview"] = not preview
     r = requests.post(url, json=payload, timeout=15)
     if r.ok:
         return
@@ -3019,8 +3023,9 @@ def main() -> int:
             except Exception as e:
                 print(f"[모음 페이지 실패 → 글로 보냄] {type(e).__name__}: {e}", file=sys.stderr)
         if page:
+            # 링크 글줄은 빼고 미리보기 카드(누르면 바로 열림)만 붙임(11.27. 사용자: 링크와 버튼이 겹침)
             send_telegram(f"📚 <b>공소청·형사사법 모음</b> {since}~{now:%H:%M} · {len(items)}건\n"
-                          f"<a href=\"{html.escape(page, quote=True)}\">▶ 모음 보기 (요약·기사 링크)</a>", silent=True, preview=True)
+                          "아래 카드를 누르면 요약과 기사 링크가 열립니다.", silent=True, preview_url=page)
         else:
             msgs = (format_list(items, now, head) if DIGEST_STYLE == "list" else
                     format_messages(items, now, head, collapse=(DIGEST_STYLE == "fold")))
