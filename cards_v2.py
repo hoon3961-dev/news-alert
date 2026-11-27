@@ -326,7 +326,7 @@ def viz_card(date_label: str, pg: str, no: int, c: dict, src: str) -> str:
     else:
         body = f"<div style='flex:1;min-height:0;margin-top:24px;display:flex;flex-direction:column'>{body}</div>"
     title = v.get("title") or c["headline"]
-    lead = f"<p style='margin-top:14px;font-size:28px;line-height:1.5;font-weight:500;color:{SUB}'>{t(v['lead'])}</p>" if v.get("lead") else ""
+    lead = f"<p style='margin-top:14px;border-left:6px solid {B2};padding:2px 0 2px 20px;font-size:30px;line-height:1.5;font-weight:700;color:{TXT}'>{t(v['lead'])}</p>" if v.get("lead") else ""
     inner = (head(no, c.get("tag", "기타"), KIND.get(typ, "")) +
              f"<h1 style='margin-top:18px;font-size:{_hsize(title, 48, 44, 40)}px;font-weight:900;line-height:1.25;color:{DEEP}'>{t(title)}</h1>"
              + lead + body + f"<div style='margin-top:14px;font-size:19px;color:#7A889E'>출처: {t(src)}</div>")

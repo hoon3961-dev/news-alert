@@ -146,6 +146,10 @@ def check(path):
             texts += [str(st.get("big", "")) + str(st.get("unit", "")), st.get("desc", "")]
         v = c.get("viz") or {}
         if v:
+            if not v.get("lead"):
+                probs.append(f"카드 {k}: 시각화 장에 그림 위 한 문장(viz.lead)이 없음")
+            elif len(v["lead"]) > 70:
+                probs.append(f"카드 {k}: 시각화 한 문장이 김({len(v['lead'])}자)")
             if v.get("type") not in cards_v2.RENDER:
                 probs.append(f"카드 {k}: viz.type은 {', '.join(cards_v2.RENDER)} 중 하나")
             texts += cards_v2.viz_texts(v)
