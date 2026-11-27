@@ -13,7 +13,7 @@
   "paras": [{"text": "사안 문단(넘김말·첫머리·맺음말 없이)", "sources": ["a3", "a7"]}],
   "cards": [{"tag": "수사", "headline": "30자 이내", "lead": "무슨 일인지 한 문장(80자 이내)",
              "points": ["보충 요점 1~3개(50자 이내)"],
-             "stat": {"label": "숫자로 보면", "big": "900", "unit": "명+", "desc": "설명", "bar": 76, "after": 2},   # 선택: 숫자 강조 칸(after: 그 숫자를 말한 문장 아래 — "lead" 또는 요점 번호)
+             "stat": {"big": "900", "unit": "명+", "desc": "설명", "bar": 76, "after": 2},   # 선택: 숫자 강조 칸(after: 그 숫자를 말한 문장 아래 — "lead" 또는 요점 번호)
              "viz": {"type": "ratio", "title": "시각화 장 제목", "data": {...}},                         # 선택: 시각화 1장 추가
              "sources": ["a3"]}],   # 사안당 글 카드 1장 + (viz가 있으면) 시각화 1장 = 최대 2장. viz 형식은 cards_v2.py 머리말
   "articles": {"a3": {"title": "...", "press": "...", "url": "..."}},   # prepare의 기사 정보 그대로

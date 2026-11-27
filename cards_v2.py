@@ -2,7 +2,7 @@
 
 사안 카드 데이터(원고 파일 cards[] 한 개):
   {"tag": "수사", "headline": "제목", "lead": "무슨 일인지 한 문장", "points": ["보충 요점", "..."],
-   "stat": {"label": "숫자로 보면", "big": "900", "unit": "명+", "desc": "설명", "bar": 76, "after": 2},   # 선택
+   "stat": {"big": "900", "unit": "명+", "desc": "설명", "bar": 76, "after": 2},   # 선택
    "viz": {"type": "ratio|hbar|vs|timeline|flow|route|tree|grid|quote|waffle", "title": "시각화 장 제목", "data": {...}},  # 선택
    "sources": ["a3"]}
 - 사안마다 글 카드 1장이 기본. viz가 있으면 바로 뒤에 시각화 1장을 더 붙임(사안당 최대 2장).
@@ -131,7 +131,7 @@ def text_card(date_label: str, pg: str, no: int, c: dict, src: str) -> str:
             except (TypeError, ValueError):
                 pass
         statb = (f"<div style='margin-top:22px;display:flex;align-items:center;gap:30px;background:linear-gradient(120deg,{B1},{B2});color:#fff;border-radius:24px;padding:22px 32px'>"
-                 f"<div style='flex:none;white-space:nowrap'><div style='font-size:21px;font-weight:700;opacity:.85'>{t(st.get('label') or '숫자로 보면')}</div>"
+                 f"<div style='flex:none;white-space:nowrap'>" + (f"<div style='font-size:21px;font-weight:700;opacity:.85'>{t(st['label'])}</div>" if st.get('label') else '') + f""
                  f"<span style='font-size:88px;font-weight:900;line-height:1'>{t(st['big'])}</span><span style='font-size:34px;font-weight:700;margin-left:4px'>{t(st.get('unit'))}</span></div>"
                  f"<div style='flex:1;font-size:27px;line-height:1.45'>{t(st.get('desc'))}{bar}</div></div>")
     fs = 33 if has else 38
