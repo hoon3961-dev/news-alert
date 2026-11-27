@@ -102,10 +102,11 @@ def toc(date_label: str, pg: str, items: list) -> str:
     k = len(items)
     fs = 30 if k <= 6 else 26 if k <= 8 else 23
     circ = 68 if k <= 6 else 56 if k <= 8 else 48
+    rh = min(118, 760 // max(k, 1))              # 줄 높이 고정 → 사안이 적어도 위에서부터(11.28. 지적: 1건이면 가운데 떠 있었음)
     rows = ""
     for i, (tag, hl) in enumerate(items, 1):
         style = (f"background:{B2};color:#fff;border:3px solid {B2}" if i % 2 == 0 else f"background:#fff;color:{DEEP};border:3px solid {DEEP}")
-        rows += (f"<div style='flex:1;display:flex;align-items:center;gap:24px;border-bottom:2px solid {DEEP}'>"
+        rows += (f"<div style='flex:none;height:{rh}px;display:flex;align-items:center;gap:24px;border-bottom:2px solid {DEEP}'>"
                  f"<div style='flex:none;width:{circ}px;height:{circ}px;border-radius:50%;{style};display:flex;align-items:center;justify-content:center;font-size:{int(circ * .44)}px;font-weight:500'>{i:02d}</div>"
                  f"<div style='flex:1;min-width:0;font-size:{fs}px;font-weight:700;line-height:1.3;color:{DEEP}'>{t(hl)}</div>"
                  f"<div style='flex:none;width:120px;text-align:right;font-size:22px;font-weight:500;color:{SUB}'>{t(tag)}</div></div>")
@@ -350,7 +351,7 @@ def closing(pg: str) -> str:
 
 
 # ───────── 전체 묶음 ─────────
-ALBUM_MAX = 11   # 표지 1장(따로) + 나머지 묶음 10장(텔레그램 앨범 한도). 넘으면 '이어서'로 나뉘어 보였음(11.27. 지적)
+ALBUM_MAX = 10   # 텔레그램 앨범 한 번에 10장 → 넘으면 '이어서'로 두 번 나가 보였음(11.27. 사용자 지적)
 
 
 def fit_album(cards: list) -> list:

@@ -2681,9 +2681,9 @@ def render_cards(pages: list, folder: str, height: int = 1350) -> list:
     return paths
 
 
-CARD_SEND = (os.getenv("CARD_SEND") or "cover").strip().lower()
-# cover(기본, 11.28. 사용자 선택): 표지 한 장을 크게(설명 글 포함) + 바로 아래 나머지 카드 묶음(최대 10장)
-# album: 전체를 묶음 하나로(10장 한도) | pdf: PDF 한 개(사용자 거절)
+CARD_SEND = (os.getenv("CARD_SEND") or "album").strip().lower()
+# album(기본): 전체를 사진 묶음 하나로(10장 한도). 11.28. 사용자: 오늘 바꾼 방식(pdf·cover) 모두 거절, 11.27. 방식으로 되돌림
+# cover: 표지 한 장 크게 + 나머지 묶음 | pdf: PDF 한 개
 
 
 def send_photo(path: str, caption: str, reply_to: int = 0) -> int:
@@ -2813,8 +2813,8 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
         import cards_v2
         pages = cards_v2.build(cards, sources, now, label, since or now - dt.timedelta(hours=14), until or now,
                                fit=(CARD_SEND != "pdf"))   # PDF는 장수 제한이 없어 시각화를 빼지 않음
-        if CARD_SEND == "album":
-            cards_v2.ALBUM_MAX = 10
+        if CARD_SEND == "cover":
+            cards_v2.ALBUM_MAX = 11
         paths = render_cards(pages, folder, 1080)
     else:
         pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
