@@ -11,7 +11,11 @@
   "label": "아침",                      # 아침 | 오후
   "since": "...", "cut": "...",          # prepare가 알려 준 값 그대로
   "paras": [{"text": "사안 문단(넘김말·첫머리·맺음말 없이)", "sources": ["a3", "a7"]}],
-  "cards": [{"tag": "수사", "headline": "28자 이내", "points": ["44자 이내", "..."], "sources": ["a3"]}],
+  "cards": [{"tag": "수사", "headline": "30자 이내", "lead": "무슨 일인지 한 문장(80자 이내)",
+             "points": ["보충 요점 1~3개(50자 이내)"],
+             "stat": {"label": "숫자로 보면", "big": "900", "unit": "명+", "desc": "설명", "bar": 76},   # 선택: 숫자 강조 칸
+             "viz": {"type": "ratio", "title": "시각화 장 제목", "data": {...}},                         # 선택: 시각화 1장 추가
+             "sources": ["a3"]}],   # 사안당 글 카드 1장 + (viz가 있으면) 시각화 1장 = 최대 2장. viz 형식은 cards_v2.py 머리말
   "articles": {"a3": {"title": "...", "press": "...", "url": "..."}},   # prepare의 기사 정보 그대로
   "title_only": ["본문을 못 읽어 원고에서 뺀 기사 제목"],
   "more": 0,
@@ -125,17 +129,32 @@ def check(path):
                 probs.append(f"원고 {k}문단: '~습니다/~입니다'로 끝나지 않음 | {sent[:50]}")
             if len(sent) > 95:
                 probs.append(f"원고 {k}문단: 문장이 김({len(sent)}자) | {sent[:40]}")
+    import cards_v2
     for k, c in enumerate(d.get("cards", []), 1):
+        src = n._src_text(src_of(c.get("sources", [])))
         if len(c.get("headline", "")) > 30:
             probs.append(f"카드 {k}: 제목이 김({len(c['headline'])}자)")
         if not 1 <= len(c.get("points", [])) <= 3:
             probs.append(f"카드 {k}: 요점은 1~3개")
         if c.get("tag") not in n.CARD_TAGS:
             probs.append(f"카드 {k}: tag는 {', '.join(n.CARD_TAGS)} 중 하나")
-        for t in [c.get("headline", "")] + c.get("points", []):
-            if len(t) > 46 and t != c.get("headline"):
+        if len(c.get("lead", "")) > 80:
+            probs.append(f"카드 {k}: 핵심 문장이 김({len(c['lead'])}자)")
+        texts = [c.get("headline", ""), c.get("lead", "")] + c.get("points", [])
+        st = c.get("stat") or {}
+        if st:
+            texts += [str(st.get("big", "")) + str(st.get("unit", "")), st.get("desc", "")]
+        v = c.get("viz") or {}
+        if v:
+            if v.get("type") not in cards_v2.RENDER:
+                probs.append(f"카드 {k}: viz.type은 {', '.join(cards_v2.RENDER)} 중 하나")
+            texts += cards_v2.viz_texts(v)
+        for t in texts:
+            if not t:
+                continue
+            if t in c.get("points", []) and len(t) > 50:
                 probs.append(f"카드 {k}: 요점이 김({len(t)}자) | {t[:30]}")
-            bad = n.unsupported(t, n._src_text(src_of(c.get("sources", []))), now)
+            bad = n.unsupported(re.sub(r"<[^>]+>", " ", t), src, now)
             if bad:
                 probs.append(f"카드 {k}: 원문에 없는 숫자·기관명 {', '.join(bad)} | {t[:40]}")
             if re.search(r"관할하게|산하(?:가|로) 됨|[一-鿿]", t):
@@ -159,25 +178,28 @@ def preview(path):
         if not g:
             continue
         use.append(g)
-        cards.append({"tag": c.get("tag") if c.get("tag") in n.CARD_TAGS else "기타",
-                      "headline": n._fix_facts(c["headline"]), "points": [n._fix_facts(x) for x in c["points"]][:3]})
+        cards.append(n.card_fields(c))
     if not cards:
         print("카드 없음")
         return
     sources = [n.press_name(g[0]["press"]) + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for g in use]
-    wd = "월화수목금토일"[now.weekday()]
-    pages = n.card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {d['label']}",
-                         f"{d['label']} 브리핑", len(arts), 0)
+    import cards_v2
+    since = dt.datetime.fromisoformat(d["since"]) if d.get("since") else now - dt.timedelta(hours=14)
+    until = min(dt.datetime.fromisoformat(d["cut"]), now) if d.get("cut") else now
+    pages = cards_v2.build(cards, sources, now, d["label"], since, until)
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preview")
-    paths = n.render_cards(pages, out)
+    for f in os.listdir(out) if os.path.isdir(out) else []:
+        if f.startswith("card_"):
+            os.remove(os.path.join(out, f))
+    paths = n.render_cards(pages, out, 1080)
     try:                                            # 한눈에 보도록 4장씩 한 줄로 모은 그림
         from PIL import Image
-        ims = [Image.open(p_).resize((540, 675)) for p_ in paths]
+        ims = [Image.open(p_).resize((540, 540)) for p_ in paths]
         cols = 4
         rows = (len(ims) + cols - 1) // cols
-        sheet = Image.new("RGB", (cols * 560 + 20, rows * 695 + 20), "#cfd6df")
+        sheet = Image.new("RGB", (cols * 560 + 20, rows * 560 + 20), "#cfd6df")
         for i, im in enumerate(ims):
-            sheet.paste(im, (20 + (i % cols) * 560, 20 + (i // cols) * 695))
+            sheet.paste(im, (20 + (i % cols) * 560, 20 + (i // cols) * 560))
         sheet.save(os.path.join(out, "sheet.png"))
         print(f"미리보기: {os.path.join(out, 'sheet.png')} (카드 {len(paths)}장, 낱장은 {out}/card_N.png)")
     except Exception as e:

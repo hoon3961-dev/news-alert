@@ -2234,6 +2234,7 @@ def send_removed(removed: list, reply_to: int, verified: bool) -> None:
 # CARD=off 로 끄기. CARD_MAX: 사안 카드 최대 장수(표지·마무리 포함 10장 이내라 8 이하)
 CARD_ON = (os.getenv("CARD") or "on").strip().lower() != "off"
 CARD_MAX = max(1, min(int(os.getenv("CARD_MAX") or "8"), 8))
+CARD_STYLE = (os.getenv("CARD_STYLE") or "v2").strip().lower()   # v2: 정사각 새 틀 / v1: 예전 세로 틀
 CARD_TAGS = {"조직·인력": "#2E5C8A", "인사": "#6B4F8A", "수사": "#8A3B3B", "국회·예산": "#3D6B4F",
              "제도·협의": "#7A6230", "기타": "#5B6B7F"}
 CARD_DISCLAIMER = "언론보도 요약 · 사실관계 확인 전 · 내부 참고용"
@@ -2531,7 +2532,7 @@ def _chrome() -> str:
     return ""
 
 
-def render_cards(pages: list, folder: str) -> list:
+def render_cards(pages: list, folder: str, height: int = 1350) -> list:
     chrome = _chrome()
     if not chrome:
         raise RuntimeError("크롬 없음")
@@ -2542,7 +2543,7 @@ def render_cards(pages: list, folder: str) -> list:
         hp, png = os.path.join(folder, f"card_{n}.html"), os.path.join(folder, f"card_{n}.png")
         open(hp, "w", encoding="utf-8").write(h.replace("<style>", "<style>" + font, 1))
         subprocess.run([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
-                        "--force-device-scale-factor=1", "--window-size=1080,1350", "--virtual-time-budget=3000",
+                        "--force-device-scale-factor=1", f"--window-size=1080,{height}", "--virtual-time-budget=4000",
                         f"--screenshot={png}", "file://" + os.path.abspath(hp)],
                        capture_output=True, timeout=90)
         if not os.path.exists(png) or os.path.getsize(png) < 5000:
@@ -2629,19 +2630,26 @@ def press_name(p: str) -> str:
 
 
 def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int, reply_to: int,
-                  cards: list = None, warn: str = "") -> None:
+                  cards: list = None, warn: str = "", since: dt.datetime = None, until: dt.datetime = None) -> None:
     show = use[:CARD_MAX]
     more += len(use) - len(show)
     cards = cards if cards is not None else card_copy(show, now)
     sources = [press_name(g[0]["press"]) + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
                + (" · 본문 미확인(제목 기준)" if any(x.get("_title_only") for x in g) else "") for g in show]
     wd = "월화수목금토일"[now.weekday()]
-    pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
-                       f"{label} 브리핑", n_art, more)
-    paths = render_cards(pages, os.path.join(os.getenv("RUNNER_TEMP") or ".", f"cards_{now:%m%d_%H%M}"))
-    caption = (warn + f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용) · 사안 {len(cards)}개\n"
+    folder = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"cards_{now:%m%d_%H%M}")
+    if CARD_STYLE == "v2":                         # 정사각: 표지·목차·사안(시각화 포함 사안당 최대 2장)·마무리
+        import cards_v2
+        pages = cards_v2.build(cards, sources, now, label, since or now - dt.timedelta(hours=14), until or now)
+        paths = render_cards(pages, folder, 1080)
+    else:
+        pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
+                           f"{label} 브리핑", n_art, more)
+        paths = render_cards(pages, folder)
+    caption = (warn + f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용) · 사안 {len(cards)}개 · {len(paths)}장\n"
                "사안별 기사 링크는 아래 메시지에 모두 있습니다.")
-    send_cards(paths, caption, reply_to)
+    for k in range(0, len(paths), 10):             # 텔레그램 앨범은 한 번에 10장까지
+        send_cards(paths[k:k + 10], caption if k == 0 else f"🗂 {label} 카드뉴스 (이어서)", reply_to)
     # 설명란은 1,024자 제한이라 링크가 잘렸음 → 모든 기사 링크를 따로 보냄(4,096자씩 나눔)
     e = html.escape
     blocks = []
@@ -2669,6 +2677,19 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
         if not r.ok:
             print(f"[카드 링크 발송 오류] {r.status_code}: {r.text[:150]}", file=sys.stderr)
     print(f"카드뉴스({label}) 발송: {len(paths)}장, 링크 {sum(len(g) for g in show)}건")
+
+
+def card_fields(c: dict) -> dict:
+    """원고 파일의 카드 한 개 → 카드 틀에 넘길 값(마지막 기계 교정 포함)"""
+    out = {"tag": c.get("tag") if c.get("tag") in CARD_TAGS else "기타",
+           "headline": _fix_facts(c["headline"]), "points": [_fix_facts(x) for x in c.get("points", [])][:3]}
+    if c.get("lead"):
+        out["lead"] = _fix_facts(c["lead"])
+    if (c.get("stat") or {}).get("big"):
+        out["stat"] = c["stat"]
+    if (c.get("viz") or {}).get("type"):
+        out["viz"] = c["viz"]
+    return out
 
 
 def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
@@ -2715,9 +2736,9 @@ def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
             if not g:
                 continue
             use.append(g)
-            cards.append({"tag": c.get("tag") if c.get("tag") in CARD_TAGS else "기타",
-                          "headline": _fix_facts(c["headline"]), "points": [_fix_facts(x) for x in c["points"]][:3]})
-        card_briefing(use, label, now, n_art, 0, mid, cards, "")
+            cards.append(card_fields(c))
+        until = dt.datetime.fromisoformat(d["cut"]) if d.get("cut") else now
+        card_briefing(use, label, now, n_art, 0, mid, cards, "", since, min(until, now))
     if test:                                       # 시험은 발송 범위·시각 기록을 바꾸지 않음
         return
     slot = None                                    # 이 시간대 자동 브리핑(대비책)이 다시 나가지 않게
@@ -2835,7 +2856,7 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
             print(f"음성 브리핑({label}) 발송: {len(recs)}건, 원고 {len(script)}자, {engine}")
             if CARD_ON:
                 try:
-                    card_briefing(use, label, now, len(recs), more, mid, cards, warn)
+                    card_briefing(use, label, now, len(recs), more, mid, cards, warn, since, now)
                 except Exception as e:
                     AUDIO_ERR.append(f"카드뉴스: {type(e).__name__}: {str(e)[:200]}")
                     print(f"[카드뉴스 실패] {type(e).__name__}: {e}", file=sys.stderr)
