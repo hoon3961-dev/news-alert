@@ -831,7 +831,8 @@ def clean_summary(t: str, limit: int = 170, title: str = "") -> str:
 
 def page_nodes(arts: list, now: dt.datetime, intro: str) -> list:
     """사안마다 한 덩어리: 굵은 제목 / 언론사·시각(기울임) / 요약 / 기사 링크 — 사안 사이는 가로줄"""
-    nodes = [{"tag": "p", "children": [{"tag": "em", "children": [intro]}]}]
+    nodes = [{"tag": "p", "children": [{"tag": "strong", "children": [intro]}, {"tag": "br"},
+                                       {"tag": "em", "children": ["언론보도를 요약한 것으로 사실관계 확인 전입니다."]}]}]
     for n, g in enumerate(group_articles(arts), 1):
         a = g[0]
         nodes.append({"tag": "hr"})
@@ -3060,8 +3061,8 @@ def main() -> int:
     if sample and state.get("audio_log"):
         recs = [r for r in state["audio_log"] if r.get("found", "")[:10] == f"{now:%Y-%m-%d}"][-12:] or state["audio_log"][-12:]
         items = [dict(from_record(r), priority=False, group=None) for r in reversed(recs)]
-        page = telegraph_page(items, now, f"[시험] 공소청·형사사법 모음 {now:%m.%d.} ({len(items)}건)",
-                              f"시험 페이지 · 오늘 기사 {len(items)}건으로 만든 견본 · 언론보도 요약(사실관계 확인 전)")
+        page = telegraph_page(items, now, "[시험] 공소청·형사사법 언론보도 모음",
+                              f"시험 견본 · {now.month}월 {now.day}일 기사 {len(items)}건")
         send_telegram(f"🧪 <b>시험 · 공소청·형사사법 모음</b> 견본 {len(items)}건\n"
                       "아래 카드를 누르면 요약과 기사 링크가 열립니다.", silent=True, preview_url=page)
         print(f"모음 시험 견본 발송: {len(items)}건")
@@ -3080,8 +3081,8 @@ def main() -> int:
         if DIGEST_STYLE == "page":                     # 웹페이지 한 장으로 만들고 대화방엔 링크 한 줄만
             try:
                 n_grp = len(group_articles(items))
-                page = telegraph_page(items, now, f"공소청·형사사법 모음 {now:%m.%d.} {since}~{now:%H:%M} ({len(items)}건)",
-                                      f"{now:%Y.%m.%d.} {since}~{now:%H:%M} 신규 {len(items)}건 · {n_grp}개 사안 · 언론보도 요약(사실관계 확인 전)")
+                page = telegraph_page(items, now, "공소청·형사사법 언론보도 모음",   # 제목엔 숫자 빼기(즉시 보기 글꼴이 숫자를 들쭉날쭉하게 그림) — 날짜·시각·건수는 첫 줄에
+                                      f"{now.month}월 {now.day}일({'월화수목금토일'[now.weekday()]}) {since}~{now:%H:%M} · 신규 {len(items)}건({n_grp}개 사안)")
             except Exception as e:
                 print(f"[모음 페이지 실패 → 글로 보냄] {type(e).__name__}: {e}", file=sys.stderr)
         if page:
