@@ -2841,12 +2841,16 @@ def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
         caption = caption[:990].rsplit("\n", 1)[0] + "\n…"
     state["audio_scripts"] = (state.get("audio_scripts", []) + [[now.isoformat(), label, script, "Claude 작성"]])[-10:]
     fpath = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
-    engine = tts_mp3(spoken, fpath)
-    mixed = add_bgm(fpath, now)
-    mid = send_audio(mixed, caption, f"{now:%m.%d.} {label} 중수청 브리핑", d.get("audio_format", ""))
-    if (os.getenv("AUDIO_SCRIPT_MSG") or "on").strip().lower() != "off" and not d.get("audio_only"):
-        send_script(script, mid, "📝 <b>음성 원고</b> (눌러서 펼치기 · 문단 번호로 지적해 주세요)\n")
-    print(f"Claude 원고 음성 발송({label}): 원고 {len(script)}자, {engine}, 형식 {d.get('audio_format') or AUDIO_FORMAT}")
+    if d.get("cards_only"):                        # 시험용: 음성 없이 카드뉴스만
+        mid = None
+        print("카드뉴스만 발송(시험)")
+    else:
+        engine = tts_mp3(spoken, fpath)
+        mixed = add_bgm(fpath, now)
+        mid = send_audio(mixed, caption, f"{now:%m.%d.} {label} 중수청 브리핑", d.get("audio_format", ""))
+        if (os.getenv("AUDIO_SCRIPT_MSG") or "on").strip().lower() != "off" and not d.get("audio_only"):
+            send_script(script, mid, "📝 <b>음성 원고</b> (눌러서 펼치기 · 문단 번호로 지적해 주세요)\n")
+        print(f"Claude 원고 음성 발송({label}): 원고 {len(script)}자, {engine}, 형식 {d.get('audio_format') or AUDIO_FORMAT}")
     if CARD_ON and d.get("cards") and not d.get("audio_only"):
         use, cards = [], []
         for c in d["cards"][:CARD_MAX]:
@@ -2856,7 +2860,7 @@ def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
             use.append(g)
             cards.append(card_fields(c))
         until = dt.datetime.fromisoformat(d["cut"]) if d.get("cut") else now
-        card_briefing(use, label, now, n_art, 0, mid, cards, "", since, min(until, now))
+        card_briefing(use, label, now, n_art, 0, mid, cards, "🧪 <b>시험</b>\n" if test else "", since, min(until, now))
     if test:                                       # 시험은 발송 범위·시각 기록을 바꾸지 않음
         return
     slot = None                                    # 이 시간대 자동 브리핑(대비책)이 다시 나가지 않게
