@@ -350,11 +350,11 @@ def closing(pg: str) -> str:
 
 
 # ───────── 전체 묶음 ─────────
-ALBUM_MAX = 10   # 텔레그램 앨범 한 번에 10장 → 넘으면 '이어서'로 두 번 나가 보였음(11.27. 사용자 지적)
+ALBUM_MAX = 11   # 표지 1장(따로) + 나머지 묶음 10장(텔레그램 앨범 한도). 넘으면 '이어서'로 나뉘어 보였음(11.27. 지적)
 
 
 def fit_album(cards: list) -> list:
-    """표지·목차·마무리 포함 10장 안에 들도록, 뒤 사안의 시각화 장부터 뺌(글 카드·마무리 안내는 유지)"""
+    """표지·목차·마무리 포함 ALBUM_MAX장 안에 들도록, 뒤 사안의 시각화 장부터 뺌(글 카드·마무리 안내는 유지)"""
     cards = [dict(c) for c in cards]
     total = lambda: 3 + sum(2 if (c.get("viz") or {}).get("type") in RENDER else 1 for c in cards)
     for c in reversed(cards):
