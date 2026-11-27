@@ -65,6 +65,7 @@ jobs:
           AUDIO: ${{ vars.AUDIO }}
           AUDIO_TIMES: ${{ vars.AUDIO_TIMES }}
           AUDIO_VOICE: ${{ vars.AUDIO_VOICE }}
+          AUDIO_FORMAT: ${{ vars.AUDIO_FORMAT }}
           AUDIO_BGM: ${{ vars.AUDIO_BGM }}
           AUDIO_BGM_STYLE: ${{ vars.AUDIO_BGM_STYLE }}
           AUDIO_BGM_URL: ${{ vars.AUDIO_BGM_URL }}

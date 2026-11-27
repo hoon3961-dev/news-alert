@@ -1943,8 +1943,13 @@ def to_voice(mp3: str) -> str:
         return ""
 
 
-def send_audio(path: str, caption: str, title: str) -> int:
-    ogg = to_voice(path)
+AUDIO_FORMAT = (os.getenv("AUDIO_FORMAT") or "voice").strip().lower()   # voice(음성 메시지) | music(음악 파일)
+
+
+def send_audio(path: str, caption: str, title: str, fmt: str = "") -> int:
+    """fmt=music: 음악 파일로 보냄 → 위쪽 재생 막대를 누르면 큰 재생 화면(⏮ 처음으로·진행 막대)이 열림.
+    대신 끝나면 채팅방의 다른 음악 파일이 이어 재생될 수 있음. voice: 음성 메시지(끝나면 멈춤)"""
+    ogg = "" if (fmt or AUDIO_FORMAT) == "music" else to_voice(path)
     if ogg:                                        # 음성 메시지로 발송(재생이 끝나면 멈춤)
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendVoice"
         field, fpath, mime = "voice", ogg, "audio/ogg"
@@ -2775,11 +2780,11 @@ def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
     fpath = os.path.join(os.getenv("RUNNER_TEMP") or ".", f"중수청브리핑_{now:%m%d_%H%M}.mp3")
     engine = tts_mp3(spoken, fpath)
     mixed = add_bgm(fpath, now)
-    mid = send_audio(mixed, caption, f"{now:%m.%d.} {label} 중수청 브리핑")
-    if (os.getenv("AUDIO_SCRIPT_MSG") or "on").strip().lower() != "off":
+    mid = send_audio(mixed, caption, f"{now:%m.%d.} {label} 중수청 브리핑", d.get("audio_format", ""))
+    if (os.getenv("AUDIO_SCRIPT_MSG") or "on").strip().lower() != "off" and not d.get("audio_only"):
         send_script(script, mid, "📝 <b>음성 원고</b> (눌러서 펼치기 · 문단 번호로 지적해 주세요)\n")
-    print(f"Claude 원고 음성 발송({label}): 원고 {len(script)}자, {engine}")
-    if CARD_ON and d.get("cards"):
+    print(f"Claude 원고 음성 발송({label}): 원고 {len(script)}자, {engine}, 형식 {d.get('audio_format') or AUDIO_FORMAT}")
+    if CARD_ON and d.get("cards") and not d.get("audio_only"):
         use, cards = [], []
         for c in d["cards"][:CARD_MAX]:
             g = [arts[i] for i in c.get("sources", []) if i in arts]
