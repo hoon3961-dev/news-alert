@@ -384,3 +384,106 @@ def viz_texts(v: dict) -> list:
             out.append(re.sub(r"<[^>]+>", " ", x))
     walk(v)
     return out
+
+
+# ───────── 추가 틀(11~16) ─────────
+def v_law(d):
+    """법 조항: 조문 상자 + 쟁점"""
+    pts = "".join(f"<div style='display:flex;gap:16px;padding:14px 0;border-bottom:2px solid {LINE}'><b style='flex:none;min-width:110px;font-size:24px;color:{B2}'>{t(p.get('who'))}</b>"
+                  f"<span style='font-size:27px;line-height:1.45'>{t(p.get('text'))}</span></div>" for p in d.get("issues", []))
+    return (f"<div style='border:3px solid {B2};border-radius:24px;overflow:hidden'>"
+            f"<div style='background:{B2};color:#fff;padding:14px 28px;font-size:27px;font-weight:900'>{t(d.get('law'))}</div>"
+            f"<div style='padding:22px 28px;font-size:29px;line-height:1.55;font-weight:500;background:#F6F8FD'>{t(d.get('text'))}</div></div>"
+            + (f"<div style='margin-top:22px;font-size:23px;font-weight:700;color:{SUB}'>{t(d.get('issue_title') or '쟁점')}</div>" if pts else "")
+            + f"<div>{pts}</div>" + _note(d))
+
+
+def v_table(d):
+    """두 기관 항목별 비교 표"""
+    a, b = d.get("a", "A"), d.get("b", "B")
+    head = (f"<div style='display:grid;grid-template-columns:170px 1fr 1fr;gap:10px'><span></span>"
+            f"<div style='background:{PALE};color:{DEEP};border-radius:16px;padding:14px;text-align:center;font-size:30px;font-weight:900'>{t(a)}</div>"
+            f"<div style='background:{B2};color:#fff;border-radius:16px;padding:14px;text-align:center;font-size:30px;font-weight:900'>{t(b)}</div></div>")
+    rows = "".join(f"<div style='display:grid;grid-template-columns:170px 1fr 1fr;gap:10px;align-items:stretch'>"
+                   f"<div style='display:flex;align-items:center;font-size:25px;font-weight:900;color:{B2}'>{t(r.get('item'))}</div>"
+                   f"<div style='border:2px solid {LINE};border-radius:16px;padding:16px 18px;font-size:26px;line-height:1.45'>{t(r.get('a'))}</div>"
+                   f"<div style='border:2px solid {B2};border-radius:16px;padding:16px 18px;font-size:26px;line-height:1.45'>{t(r.get('b'))}</div></div>"
+                   for r in d.get("rows", []))
+    return head + f"<div style='margin-top:12px;display:flex;flex-direction:column;gap:12px'>{rows}</div>" + _note(d)
+
+
+def v_profile(d):
+    """인물 소개(사진 없이)"""
+    init = t((d.get("name") or " ")[0])
+    rows = "".join(f"<div style='display:grid;grid-template-columns:120px 1fr;gap:18px;padding:14px 0;border-bottom:2px solid {LINE}'>"
+                   f"<b style='font-size:25px;color:{B2}'>{t(k)}</b><span style='font-size:27px;line-height:1.5'>{t(v)}</span></div>" for k, v in d.get("rows", []))
+    return (f"<div style='display:flex;align-items:center;gap:26px'>"
+            f"<div style='flex:none;width:120px;height:120px;border-radius:50%;background:linear-gradient(140deg,{B1},{B2});color:#fff;display:flex;align-items:center;justify-content:center;font-size:56px;font-weight:900'>{init}</div>"
+            f"<div><div style='font-size:46px;font-weight:900'>{t(d.get('name'))}</div><div style='margin-top:6px;font-size:27px;color:{SUB};font-weight:700'>{t(d.get('role'))}</div></div></div>"
+            f"<div style='margin-top:16px'>{rows}</div>" + _note(d))
+
+
+# 한반도 개략도(정확한 지도가 아닌 위치 안내용 그림): 좌표는 0~100
+_KMAP = ("M38,4 L52,3 L60,8 L66,6 L72,12 L70,20 L74,28 L78,40 L80,52 L78,62 L74,70 L70,78 L62,84 L52,86 L44,84 "
+         "L38,80 L34,72 L30,66 L34,60 L30,54 L32,46 L28,40 L32,34 L30,26 L34,18 Z")
+_CITY = {"서울": (40, 33), "수원": (40, 39), "성남": (45, 37), "원주": (55, 36), "대전": (46, 54), "대구": (62, 62),
+         "광주": (38, 72), "부산": (70, 72), "제주": (36, 94), "인천": (34, 34), "춘천": (52, 29), "창원": (62, 72), "전주": (42, 62)}
+# 글자 위치(점 기준 x, y 이동, 정렬) — 수도권처럼 붙은 곳 겹침 방지
+_LAB = {"서울": (-3.4, -1.2, "end"), "수원": (-3.4, 2.6, "end"), "성남": (2.6, 3.8, "start"), "원주": (3.4, -1.4, "start"),
+        "제주": (5.4, 1.2, "start")}
+
+
+def v_map(d):
+    """지역 위치(개략도): spots=[{city, label, kind: main/ask/move}]"""
+    marks, leg = "", ""
+    for s_ in d.get("spots", []):
+        x, y = _CITY.get(s_.get("city"), (50, 50))
+        k = s_.get("kind") or "main"
+        col = {"main": B2, "ask": WARN, "move": "#9DB4E8"}.get(k, B2)
+        dx, dy, anc = _LAB.get(s_.get("city"), (3.4, 1.3, "start"))
+        marks += (f"<circle cx='{x}' cy='{y}' r='2.2' fill='{col}' stroke='#fff' stroke-width='.7'/>"
+                  f"<text x='{x + dx}' y='{y + dy}' text-anchor='{anc}' font-size='3.3' font-weight='700' fill='{DEEP}'>{t(s_.get('label') or s_.get('city'))}</text>")
+    for k, lab in (d.get("legend") or {}).items():
+        col = {"main": B2, "ask": WARN, "move": "#9DB4E8"}.get(k, B2)
+        leg += f"<div style='display:flex;align-items:center;gap:12px;font-size:27px'><span style='width:22px;height:22px;border-radius:50%;background:{col}'></span><b>{t(lab)}</b></div>"
+    side = "".join(f"<div style='font-size:24px;line-height:1.5;color:{TXT};padding:10px 0;border-bottom:2px solid {LINE}'>{t(x)}</div>" for x in d.get("side", []))
+    return (f"<div style='flex:1;display:flex;gap:26px;align-items:center'>"
+            f"<svg viewBox='14 0 76 100' style='flex:none;height:600px;width:auto'><path d='{_KMAP}' fill='{PALE}' stroke='{B1}' stroke-width='.6'/>"
+            f"<ellipse cx='36' cy='94' rx='5' ry='2.4' fill='{PALE}' stroke='{B1}' stroke-width='.6'/>{marks}</svg>"
+            f"<div style='flex:1;display:flex;flex-direction:column;gap:14px'>{leg}<div style='margin-top:8px'>{side}</div></div></div>"
+            f"<div style='font-size:19px;color:#8592A3'>※ 위치 안내용 개략도</div>" + _note(d, "6px"))
+
+
+def v_change(d):
+    """전·후 변화: items=[{label, before, after, diff, down?}]"""
+    out = ""
+    for it in d.get("items", []):
+        down = it.get("down")
+        out += (f"<div style='background:#F6F8FD;border-radius:22px;padding:20px 26px'>"
+                f"<div style='font-size:26px;font-weight:900;color:{DEEP}'>{t(it.get('label'))}</div>"
+                f"<div style='margin-top:8px;display:flex;align-items:center;gap:18px'>"
+                f"<span style='font-size:44px;font-weight:700;color:#8592A3'>{t(it.get('before'))}</span>"
+                f"<span style='font-size:40px;color:{B2};font-weight:900'>→</span>"
+                f"<span style='font-size:58px;font-weight:900;color:{B2}'>{t(it.get('after'))}</span>"
+                f"<span style='margin-left:auto;font-size:28px;font-weight:900;color:#fff;background:{B1};border-radius:999px;padding:6px 18px'>{t(it.get('diff'))}</span></div></div>")
+    head = (f"<div style='display:flex;gap:18px;font-size:23px;font-weight:700;color:{SUB};margin-bottom:10px'><span>{t(d.get('before_label'))}</span><span>→</span><span>{t(d.get('after_label'))}</span></div>"
+            if d.get("before_label") else "")
+    return head + f"<div style='display:flex;flex-direction:column;gap:16px'>{out}</div>" + _note(d)
+
+
+def v_stance(d):
+    """입장 대비: 양쪽 발언 말풍선"""
+    def bub(s, right):
+        col, fg = ((B2, "#fff") if right else (PALE, DEEP))
+        return (f"<div style='display:flex;flex-direction:column;align-items:{'flex-end' if right else 'flex-start'}'>"
+                f"<div style='font-size:25px;font-weight:900;color:{B2 if right else DEEP};margin-bottom:8px'>{t(s.get('who'))}</div>"
+                f"<div style='max-width:88%;background:{col};color:{fg};border-radius:{'28px 28px 6px 28px' if right else '28px 28px 28px 6px'};padding:24px 30px;font-size:30px;line-height:1.5;font-weight:700'>"
+                f"“{t(s.get('quote'))}”</div>"
+                + (f"<div style='margin-top:8px;font-size:22px;color:{SUB}'>{t(s.get('sub'))}</div>" if s.get("sub") else "") + "</div>")
+    return f"<div style='display:flex;flex-direction:column;gap:30px'>{bub(d.get('a', {}), False)}{bub(d.get('b', {}), True)}</div>" + _note(d, "20px")
+
+
+RENDER.update(law=v_law, table=v_table, profile=v_profile, map=v_map, change=v_change, stance=v_stance)
+KIND.update(law="법 조항", table="비교표", profile="인물", map="지도", change="변화", stance="입장")
+FIT.update({"law", "table", "profile", "change", "stance"})
+VIZ_TYPES = tuple(RENDER)
