@@ -206,10 +206,18 @@ def clean(text: str) -> str:
     return html.unescape(re.sub(r"</?b>", "", text or "")).strip()
 
 
-def press_name(url: str) -> str:
-    host = urlparse(url).netloc.lower().removeprefix("www.").removeprefix("m.")
+def press_name(x: str) -> str:
+    """기사 주소('https://www.newsis.com/...') 또는 주소로 들어온 언론사('cctoday.co.kr') → 언론사 이름.
+    이미 이름이면 그대로. 끝내 모르면 주소 대신 도메인만(전체 주소가 언론사 자리에 나오지 않게)"""
+    x = (x or "").strip()
+    if "." not in x or " " in x:
+        return x
+    host = (urlparse(x).netloc if "://" in x else x.split("/")[0]).lower().removeprefix("www.").removeprefix("m.")
     for domain, name in PRESS.items():
         if host == domain or host.endswith("." + domain):
+            return name
+    for name, dom in ALLOWED_PRESS.items():
+        if dom and (host == dom or host.endswith("." + dom)):
             return name
     return host
 
@@ -2616,17 +2624,6 @@ def thicken_cards(cards: list, groups: list) -> None:
                     break
             if len(c["points"]) >= 3:
                 break
-
-
-def press_name(p: str) -> str:
-    """'cctoday.co.kr'처럼 주소로 들어온 언론사 이름을 '충청투데이'로(받는 언론사 목록의 주소로 찾음)"""
-    p = (p or "").strip()
-    if "." in p and " " not in p:
-        host = p.lower().removeprefix("www.")
-        for name, dom in ALLOWED_PRESS.items():
-            if dom and (host == dom or host.endswith("." + dom)):
-                return name
-    return p
 
 
 def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int, reply_to: int,

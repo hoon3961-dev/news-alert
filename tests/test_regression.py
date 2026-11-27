@@ -124,5 +124,11 @@ try:
 finally:
     n.ask_claude = real
 
+# 11.27. 텍스트 알림에 언론사 대신 기사 주소가 나온 문제(같은 이름 함수가 두 번 정의돼 뒤엣것이 덮어씀)
+check("언론사: 기사 주소 → 이름", n.press_name("https://www.newsis.com/view/NISX20261127_0003886344") == "뉴시스")
+check("언론사: 도메인 → 이름", n.press_name("cctoday.co.kr") == "충청투데이")
+check("언론사: 이름은 그대로", n.press_name("뉴시스") == "뉴시스")
+check("언론사: 모르는 곳은 주소 대신 도메인", n.press_name("https://www.unknownpress.kr/a/1") == "unknownpress.kr")
+
 print(f"\n{'모두 통과' if not FAILS else '실패 ' + str(len(FAILS)) + '건: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)
