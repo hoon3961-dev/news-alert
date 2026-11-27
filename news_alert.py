@@ -707,9 +707,39 @@ def dedupe(arts: list, seen: dict, state: dict, now: dt.datetime) -> list:
             seen[a["key"]] = now.isoformat()
             drop("중복(같은 주소·비슷한 제목)", a["press"], a["title"], now)
             continue
+        # 언론사마다 제목을 다르게 단 같은 사건(예: '구본현 구속 기소' 7건) — AI 판단이 안 될 때도 걸러지게
+        if not is_scoop(a["title"]) and any(same_story(a["title"], t) for t in recent + [x["title"] for x in out]):
+            seen[a["key"]] = now.isoformat()
+            drop("중복(같은 사건, 핵심 낱말 겹침)", a["press"], a["title"], now)
+            continue
         urls.add(a["url"])
         out.append(a)
     return out
+
+
+# 제목 핵심 낱말 비교용: 기관명·흔한 수사 용어·날짜 표현은 빼고 비교
+_STORY_STOP = set(("중수청 중대범죄수사청 경찰 경찰청 공소청 검찰 공수처 혐의 수사 기소 구속 불구속 송치 출범 이르면 다음주 다음 "
+                   "내달 예정 임박 종합 단독 속보 결국 의혹 사건 관련 위해 대한 이번 전국 서울 정부 당국 논란 발표 진행 확인 공개 "
+                   "요구 우려 입장 앵커 리포트 자막뉴스 실시간뉴스 뉴스 오늘 어제 지난 올해 내년 대표 의원 장관 위원장 청장 후보자 "
+                   "전 현 등 및 첫 끝 만 년 명 건 원 억 조").split())
+_JOSA = re.compile(r"(으로|에서|에게|까지|부터|이라|라는|하는|했다|한다|에도|에는|과의|와의|은|는|이|가|을|를|의|에|로|와|과|도|만|서)$")
+
+
+def story_terms(t: str) -> set:
+    t = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", t or "")
+    out = set()
+    for w in re.findall(r"[가-힣A-Za-z0-9]+", t):
+        w2 = _JOSA.sub("", w) if len(w) > 2 else w
+        if len(w2) >= 2 and w2 not in _STORY_STOP and not w2.isdigit():
+            out.add(w2)
+    return out
+
+
+def same_story(t1: str, t2: str) -> bool:
+    """핵심 낱말이 2개 이상, 짧은 쪽 제목의 3분의 1 이상 겹치면 같은 사건"""
+    x, y = story_terms(t1), story_terms(t2)
+    s = x & y
+    return len(s) >= 2 and len(s) / max(1, min(len(x), len(y))) >= 0.34
 
 
 def similar(t1: str, t2: str, th: float = 0.6) -> bool:

@@ -130,5 +130,10 @@ check("언론사: 도메인 → 이름", n.press_name("cctoday.co.kr") == "충�
 check("언론사: 이름은 그대로", n.press_name("뉴시스") == "뉴시스")
 check("언론사: 모르는 곳은 주소 대신 도메인", n.press_name("https://www.unknownpress.kr/a/1") == "unknownpress.kr")
 
+# 11.27. 같은 사건이 언론사마다 다른 제목으로 계속 온 문제(AI 크레딧 부족으로 AI 중복 판단이 꺼졌을 때)
+check("같은 사건: 제목 달라도 핵심 낱말 겹치면 중복", n.same_story("주가조작 뒤 8년 국외 도피…범LG가 3세 구본현 기소", "'145억 부당이득' 범LG가 3세 구본현, 8년 도피 끝 구속"))
+check("같은 사건: 낸시랭 음주운전", n.same_story("낸시랭, 음주운전 혐의로 불구속 송치", "경찰, 방송인 낸시랭 '음주운전' 혐의 공소청에 송치"))
+check("다른 사건: 중수청만 겹치면 아님", not n.same_story("중수청, 이달 말 변호사 경력 채용", "내란특수본, 내달 1일 출범 가닥…중수청 10여명, 경찰 60여명"))
+
 print(f"\n{'모두 통과' if not FAILS else '실패 ' + str(len(FAILS)) + '건: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)
