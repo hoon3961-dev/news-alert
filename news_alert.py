@@ -3055,6 +3055,15 @@ def main() -> int:
     last = dt.datetime.fromisoformat(state["last_digest"]) if state["last_digest"] else None
     due, nxt = digest_due(last, now)
     due = due or DIGEST_TEST
+    sample = DIGEST_TEST and not state["pending"]   # 시험인데 대기 기사가 없으면 오늘 기사로 견본 페이지(기록은 안 바꿈)
+    if sample and state.get("audio_log"):
+        recs = [r for r in state["audio_log"] if r.get("found", "")[:10] == f"{now:%Y-%m-%d}"][-12:] or state["audio_log"][-12:]
+        items = [dict(from_record(r), priority=False, group=None) for r in reversed(recs)]
+        page = telegraph_page(items, now, f"[시험] 공소청·형사사법 모음 {now:%m.%d.} ({len(items)}건)",
+                              f"시험 페이지 · 오늘 기사 {len(items)}건으로 만든 견본 · 언론보도 요약(사실관계 확인 전)")
+        send_telegram(f"🧪 <b>시험 · 공소청·형사사법 모음</b> 견본 {len(items)}건\n"
+                      "아래 카드를 누르면 요약과 기사 링크가 열립니다.", silent=True, preview_url=page)
+        print(f"모음 시험 견본 발송: {len(items)}건")
     if state["pending"] and due:
         items = []
         for p_ in state["pending"]:
