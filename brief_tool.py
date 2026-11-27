@@ -3,6 +3,7 @@
   python brief_tool.py prepare [아침|오후]        → 이번 브리핑에 들어갈 기사 목록(본문 포함)을 brief_input.json으로
   python brief_tool.py prepare 아침 --test 24     → 시험: 최근 24시간 기사로("test": true를 원고 파일에 그대로 넣으면 발송 기록을 안 바꿈)
   python brief_tool.py check briefs/파일.json     → 원고·카드를 원문과 기계적으로 대조해 문제 목록 출력(문제 있으면 종료 코드 1)
+  python brief_tool.py preview briefs/파일.json   → GitHub과 같은 틀로 카드 그림을 미리 만들어 preview/sheet.png로(눈으로 확인)
   python brief_tool.py publish briefs/파일.json   → 점검 통과 시 저장소에 올리고 GitHub에 발송 요청
 
 원고 파일 형식(briefs/YYYYMMDD_HHMM.json):
@@ -147,6 +148,42 @@ def check(path):
     return not probs
 
 
+def preview(path):
+    """GitHub이 만들 것과 같은 틀로 카드 그림을 미리 만들고 한 장으로 모은 그림(preview/sheet.png)을 만듦 → 눈으로 확인"""
+    d = json.load(open(path, encoding="utf-8"))
+    arts = d.get("articles", {})
+    now = dt.datetime.now(n.KST)
+    use, cards = [], []
+    for c in d.get("cards", [])[:n.CARD_MAX]:
+        g = [arts[i] for i in c.get("sources", []) if i in arts]
+        if not g:
+            continue
+        use.append(g)
+        cards.append({"tag": c.get("tag") if c.get("tag") in n.CARD_TAGS else "기타",
+                      "headline": n._fix_facts(c["headline"]), "points": [n._fix_facts(x) for x in c["points"]][:3]})
+    if not cards:
+        print("카드 없음")
+        return
+    sources = [n.press_name(g[0]["press"]) + (f" 외 {len(g) - 1}건" if len(g) > 1 else "") for g in use]
+    wd = "월화수목금토일"[now.weekday()]
+    pages = n.card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {d['label']}",
+                         f"{d['label']} 브리핑", len(arts), 0)
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preview")
+    paths = n.render_cards(pages, out)
+    try:                                            # 한눈에 보도록 4장씩 한 줄로 모은 그림
+        from PIL import Image
+        ims = [Image.open(p_).resize((540, 675)) for p_ in paths]
+        cols = 4
+        rows = (len(ims) + cols - 1) // cols
+        sheet = Image.new("RGB", (cols * 560 + 20, rows * 695 + 20), "#cfd6df")
+        for i, im in enumerate(ims):
+            sheet.paste(im, (20 + (i % cols) * 560, 20 + (i // cols) * 695))
+        sheet.save(os.path.join(out, "sheet.png"))
+        print(f"미리보기: {os.path.join(out, 'sheet.png')} (카드 {len(paths)}장, 낱장은 {out}/card_N.png)")
+    except Exception as e:
+        print(f"미리보기 낱장: {out} ({type(e).__name__})")
+
+
 def publish(path):
     if not check(path):
         sys.exit(1)
@@ -174,6 +211,8 @@ if __name__ == "__main__":
         prepare(next((x for x in args if x in ("아침", "오후")), ""), hrs, bool(hrs))
     elif cmd == "check":
         sys.exit(0 if check(sys.argv[2]) else 1)
+    elif cmd == "preview":
+        preview(sys.argv[2])
     elif cmd == "publish":
         publish(sys.argv[2])
     else:

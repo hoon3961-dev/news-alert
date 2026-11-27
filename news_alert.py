@@ -2617,12 +2617,23 @@ def thicken_cards(cards: list, groups: list) -> None:
                 break
 
 
+def press_name(p: str) -> str:
+    """'cctoday.co.kr'처럼 주소로 들어온 언론사 이름을 '충청투데이'로(받는 언론사 목록의 주소로 찾음)"""
+    p = (p or "").strip()
+    if "." in p and " " not in p:
+        host = p.lower().removeprefix("www.")
+        for name, dom in ALLOWED_PRESS.items():
+            if dom and (host == dom or host.endswith("." + dom)):
+                return name
+    return p
+
+
 def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int, reply_to: int,
                   cards: list = None, warn: str = "") -> None:
     show = use[:CARD_MAX]
     more += len(use) - len(show)
     cards = cards if cards is not None else card_copy(show, now)
-    sources = [g[0]["press"] + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
+    sources = [press_name(g[0]["press"]) + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
                + (" · 본문 미확인(제목 기준)" if any(x.get("_title_only") for x in g) else "") for g in show]
     wd = "월화수목금토일"[now.weekday()]
     pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
@@ -2640,7 +2651,7 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
             if x["url"] in seen_u:
                 continue
             seen_u.add(x["url"])
-            links.append(f"<a href=\"{e(x['url'], quote=True)}\">{e(x['press'])}</a>")
+            links.append(f"<a href=\"{e(x['url'], quote=True)}\">{e(press_name(x['press']))}</a>")
         blocks.append(f"<b>{i}. {e(c['headline'])}</b>\n   " + " · ".join(links))
     msgs, cur = [], f"🔗 <b>카드뉴스 기사 링크</b> ({label})\n\n"
     for b in blocks:
@@ -2680,7 +2691,7 @@ def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
     span = (f"{since:%H:%M}~{now:%H:%M}" if since.date() == now.date() else
             f"{since:%m.%d.}({wd[since.weekday()]}) {since:%H:%M} ~ {now:%m.%d.}({wd[now.weekday()]}) {now:%H:%M}")
     n_art = len({a["url"] for a in arts.values()})
-    lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(g[0]['press'])})" + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
+    lines = [f"{n}. {html.escape(g[0]['title'][:60])} ({html.escape(press_name(g[0]['press']))})" + (f" 외 {len(g) - 1}건" if len(g) > 1 else "")
              for n, g in enumerate(groups, 1) if g]
     test = bool(d.get("test"))
     caption = ("🧪 <b>시험 · Claude 작성</b>\n" if test else "") + f"🎧 <b>중수청 {label} 브리핑</b>\n{span} 중수청 기사 {n_art}건 · {len(groups)}개 사안\n" + "\n".join(lines)
