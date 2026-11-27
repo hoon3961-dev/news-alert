@@ -3056,8 +3056,7 @@ def main() -> int:
             state["pending"].append(to_record(a, now))
     last = dt.datetime.fromisoformat(state["last_digest"]) if state["last_digest"] else None
     due, nxt = digest_due(last, now)
-    due = due or DIGEST_TEST
-    sample = DIGEST_TEST and not state["pending"]   # 시험인데 대기 기사가 없으면 오늘 기사로 견본 페이지(기록은 안 바꿈)
+    sample = DIGEST_TEST          # 시험은 항상 오늘 기사로 만든 견본 페이지만(대기 기사·발송 기록은 건드리지 않음, 11.27.)
     if sample and state.get("audio_log"):
         recs = [r for r in state["audio_log"] if r.get("found", "")[:10] == f"{now:%Y-%m-%d}"][-12:] or state["audio_log"][-12:]
         items = [dict(from_record(r), priority=False, group=None) for r in reversed(recs)]
