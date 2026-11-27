@@ -2,7 +2,7 @@
 
 사안 카드 데이터(원고 파일 cards[] 한 개):
   {"tag": "수사", "headline": "제목", "lead": "무슨 일인지 한 문장", "points": ["보충 요점", "..."],
-   "stat": {"label": "숫자로 보면", "big": "900", "unit": "명+", "desc": "설명", "bar": 76},   # 선택
+   "stat": {"label": "숫자로 보면", "big": "900", "unit": "명+", "desc": "설명", "bar": 76, "after": 2},   # 선택
    "viz": {"type": "ratio|hbar|vs|timeline|flow|route|tree|grid|quote|waffle", "title": "시각화 장 제목", "data": {...}},  # 선택
    "sources": ["a3"]}
 - 사안마다 글 카드 1장이 기본. viz가 있으면 바로 뒤에 시각화 1장을 더 붙임(사안당 최대 2장).
@@ -135,13 +135,20 @@ def text_card(date_label: str, pg: str, no: int, c: dict, src: str) -> str:
                  f"<span style='font-size:88px;font-weight:900;line-height:1'>{t(st['big'])}</span><span style='font-size:34px;font-weight:700;margin-left:4px'>{t(st.get('unit'))}</span></div>"
                  f"<div style='flex:1;font-size:27px;line-height:1.45'>{t(st.get('desc'))}{bar}</div></div>")
     fs = 33 if has else 38
-    bl = "".join(f"<div style='display:flex;align-items:flex-start;gap:18px;padding:{16 if has else 22}px 0;border-bottom:2px solid {LINE}'>"
-                 f"<span style='flex:none;width:12px;height:12px;border-radius:50%;background:{B2};margin-top:{int(fs * .62)}px'></span>"
-                 f"<p style='font-size:{fs}px;line-height:1.45;font-weight:500;color:#33415C'>{t(p)}</p></div>" for p in pts)
+    # 숫자 칸은 그 숫자를 말한 문장 바로 아래에 둠: stat.after = "lead"(기본) 또는 요점 번호(1부터)
+    after = str(st.get("after") or "lead") if has else ""
+    rows = []
+    for k, p in enumerate(pts, 1):
+        rows.append(f"<div style='display:flex;align-items:flex-start;gap:18px;padding:{16 if has else 22}px 0;border-bottom:2px solid {LINE}'>"
+                    f"<span style='flex:none;width:12px;height:12px;border-radius:50%;background:{B2};margin-top:{int(fs * .62)}px'></span>"
+                    f"<p style='font-size:{fs}px;line-height:1.45;font-weight:500;color:#33415C'>{t(p)}</p></div>")
+        if has and after == str(k):
+            rows.append(statb.replace("margin-top:22px", "margin:6px 0 10px", 1))
+    bl = "".join(rows)
     leadb = (f"<p style='margin-top:22px;border-left:6px solid {B2};padding:4px 0 4px 22px;font-size:{34 if has else 38}px;line-height:1.5;font-weight:700;color:{TXT}'>{t(lead)}</p>" if lead else "")
     inner = (head(no, c.get("tag", "기타")) +
              f"<h1 style='margin-top:22px;font-size:{_hsize(c['headline'])}px;font-weight:900;line-height:1.28;color:{DEEP}'>{t(c['headline'])}</h1>"
-             + leadb + statb + f"<div style='margin-top:10px;display:flex;flex-direction:column'>{bl}</div>"
+             + leadb + (statb if after == "lead" else "") + f"<div style='margin-top:10px;display:flex;flex-direction:column'>{bl}</div>"
              f"<div style='margin-top:auto;font-size:20px;color:#6B7A94'>출처: {t(src)}</div>")
     return shell(date_label, pg, inner, "40px 52px 30px")
 
