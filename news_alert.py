@@ -2292,9 +2292,9 @@ def send_removed(removed: list, reply_to: int, verified: bool) -> None:
 
 
 # ── 카드뉴스(브리핑마다 텔레그램 앨범, 부서 공유용·보고서풍) ─────────────────
-# CARD=off 로 끄기. CARD_MAX: 사안 카드 최대 장수(표지·마무리 포함 10장 이내라 8 이하)
+# CARD=off 로 끄기. CARD_MAX: 사안 최대 개수(표지·목차·마무리 3장 + 사안 → 텔레그램 앨범 10장 이내라 7 이하)
 CARD_ON = (os.getenv("CARD") or "on").strip().lower() != "off"
-CARD_MAX = max(1, min(int(os.getenv("CARD_MAX") or "8"), 8))
+CARD_MAX = max(1, min(int(os.getenv("CARD_MAX") or "7"), 7))
 CARD_STYLE = (os.getenv("CARD_STYLE") or "v2").strip().lower()   # v2: 정사각 새 틀 / v1: 예전 세로 틀
 CARD_TAGS = {"조직·인력": "#2E5C8A", "인사": "#6B4F8A", "수사": "#8A3B3B", "국회·예산": "#3D6B4F",
              "제도·협의": "#7A6230", "기타": "#5B6B7F"}

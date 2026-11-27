@@ -350,10 +350,25 @@ def closing(pg: str) -> str:
 
 
 # ───────── 전체 묶음 ─────────
+ALBUM_MAX = 10   # 텔레그램 앨범 한 번에 10장 → 넘으면 '이어서'로 두 번 나가 보였음(11.27. 사용자 지적)
+
+
+def fit_album(cards: list) -> list:
+    """표지·목차·마무리 포함 10장 안에 들도록, 뒤 사안의 시각화 장부터 뺌(글 카드·마무리 안내는 유지)"""
+    cards = [dict(c) for c in cards]
+    total = lambda: 3 + sum(2 if (c.get("viz") or {}).get("type") in RENDER else 1 for c in cards)
+    for c in reversed(cards):
+        if total() <= ALBUM_MAX:
+            break
+        if (c.get("viz") or {}).get("type") in RENDER:
+            print(f"카드 10장 맞춤: '{c.get('headline', '')}' 시각화 장 뺌")
+            c.pop("viz")
+    return cards
 def build(cards: list, sources: list, now, label: str, since, until) -> list:
     """cards: 사안 카드 목록, sources: 사안별 출처 문구. 반환: 페이지 HTML 목록(표지·목차·사안·마무리)"""
     date_label = f"{now:%m. %d.}({WD[now.weekday()]}) {label}"
     period = (f"{since:%Y. %m. %d.}({WD[since.weekday()]}) {since:%H:%M}", f"{until:%Y. %m. %d.}({WD[until.weekday()]}) {until:%H:%M}")
+    cards = fit_album(cards)
     n_pages = 3 + sum(2 if (c.get("viz") or {}).get("type") in RENDER else 1 for c in cards)
     pages = [cover((f"{now:%m.%d.}", WD[now.weekday()]), label, period),
              toc(date_label, f"2 / {n_pages}", [(c.get("tag", "기타"), c["headline"]) for c in cards])]

@@ -138,5 +138,10 @@ check("다른 사건: 중수청만 겹치면 아님", not n.same_story("중수�
 check("후속 보도: 압수수색 뒤 구속영장 청구는 새 단계", n.is_followup("중수청, 김OO 대표 구속영장 청구", ["중수청, OO건설 김OO 대표 자택 압수수색"]))
 check("후속 아님: 같은 구속 소식 다른 언론사", not n.is_followup("'145억 부당이득' 구본현, 8년 도피 끝 구속", ["범LG가 3세 구본현 구속 기소"]))
 check("후속 아님: 불구속은 구속 단계로 안 봄", not n.is_followup("낸시랭 불구속 송치", ["낸시랭 음주운전 송치"]))
+import cards_v2
+_cs = [{"headline": f"사안{i}", "viz": {"type": "vs"}} for i in range(5)]
+check("카드 10장 맞춤: 사안 5개·시각화 5개(13장) → 10장 이내", 3 + sum(2 if c.get("viz") else 1 for c in cards_v2.fit_album(_cs)) <= 10)
+check("카드 10장 맞춤: 앞 사안 시각화는 남김", bool(cards_v2.fit_album(_cs)[0].get("viz")))
+check("카드 사안 최대 7개(표지·목차·마무리 포함 10장)", n.CARD_MAX + 3 <= 10)
 print(f"\n{'모두 통과' if not FAILS else '실패 ' + str(len(FAILS)) + '건: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)
