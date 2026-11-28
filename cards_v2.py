@@ -393,7 +393,7 @@ def viz_texts(v: dict) -> list:
     def walk(x):
         if isinstance(x, dict):
             for k, y in x.items():
-                if k not in ("type", "color", "hl", "warn", "cols", "lw", "value", "part", "total", "count", "bar"):
+                if k not in ("type", "color", "hl", "warn", "cols", "lw", "value", "part", "total", "count", "bar", "kind", "answer_kind"):
                     walk(y)
         elif isinstance(x, (list, tuple)):
             for y in x:
@@ -504,4 +504,69 @@ def v_stance(d):
 RENDER.update(law=v_law, table=v_table, profile=v_profile, map=v_map, change=v_change, stance=v_stance)
 KIND.update(law="법 조항", table="비교표", profile="인물", map="지도", change="변화", stance="입장")
 FIT.update({"law", "table", "profile", "change", "stance"})
+VIZ_TYPES = tuple(RENDER)
+
+
+# ───────── 기관 간 요청·응답, 여러 기관 입장(11.28. 추가) ─────────
+_ANS = {"no": ("#FDE7E0", "#C2410C"), "hold": ("#FEF3C7", "#B45309"), "yes": ("#DCFCE7", "#15803D")}
+
+
+def v_ask(d):
+    """두 기관: 요청(→)과 응답(←). a가 요청한 쪽, b가 받은 쪽.
+    data: a{name,sub}, b{name,sub}, ask, answer, answer_kind(no/hold/yes), a_why[], b_why[], basis, status"""
+    a, b = d.get("a", {}), d.get("b", {})
+    abg, afg = _ANS.get(d.get("answer_kind") or "no")
+
+    def box(x, dark):
+        bg, fg = (f"linear-gradient(150deg,{B1},{B2})", "#fff") if dark else (PALE, DEEP)
+        sub = f"<div style='margin-top:6px;font-size:22px;opacity:.85'>{t(x.get('sub'))}</div>" if x.get("sub") else ""
+        return (f"<div style='flex:none;width:250px;background:{bg};color:{fg};border-radius:24px;padding:24px 18px;text-align:center'>"
+                f"<div style='font-size:34px;font-weight:900'>{t(x.get('name'))}</div>{sub}</div>")
+
+    mid = (f"<div style='flex:1;display:flex;flex-direction:column;justify-content:center;gap:22px;padding:0 14px'>"
+           f"<div><div style='text-align:center;font-size:24px;font-weight:700;color:{B2};margin-bottom:6px'>{t(d.get('ask'))}</div>"
+           f"<div style='display:flex;align-items:center'><div style='flex:1;height:5px;background:{B2}'></div>"
+           f"<div style='width:0;height:0;border-left:20px solid {B2};border-top:12px solid transparent;border-bottom:12px solid transparent'></div></div></div>"
+           f"<div><div style='display:flex;align-items:center'><div style='width:0;height:0;border-right:20px solid {afg};border-top:12px solid transparent;border-bottom:12px solid transparent'></div>"
+           f"<div style='flex:1;height:5px;background:{afg}'></div></div>"
+           f"<div style='text-align:center;margin-top:10px'><span style='display:inline-block;background:{abg};color:{afg};border:3px solid {afg};border-radius:12px;padding:4px 18px;font-size:28px;font-weight:900'>{t(d.get('answer'))}</span></div></div></div>")
+    top = f"<div style='display:flex;align-items:center'>{box(a, False)}{mid}{box(b, True)}</div>"
+
+    def why(lst, dark):
+        if not lst:
+            return "<div style='flex:1'></div>"
+        li = "".join(f"<li style='margin-bottom:10px'>{t(x)}</li>" for x in lst)
+        return (f"<div style='flex:1;border:2px solid {B2 if dark else LINE};border-radius:20px;padding:18px 22px 8px'>"
+                f"<ul style='padding-left:24px;font-size:25px;line-height:1.45;color:{TXT}'>{li}</ul></div>")
+    mids = f"<div style='margin-top:22px;display:flex;gap:16px'>{why(d.get('a_why'), False)}{why(d.get('b_why'), True)}</div>"
+    foot = ""
+    if d.get("basis") or d.get("status"):
+        foot = (f"<div style='margin-top:18px;display:flex;gap:14px;align-items:stretch'>"
+                + (f"<div style='flex:1;background:{BG};border-radius:16px;padding:14px 18px;font-size:22px;line-height:1.45;color:{TXT}'><b style='color:{B2}'>근거</b> {t(d.get('basis'))}</div>" if d.get("basis") else "")
+                + (f"<div style='flex:none;background:{DEEP};color:#fff;border-radius:16px;padding:14px 20px;font-size:23px;font-weight:700;display:flex;align-items:center'>{t(d.get('status'))}</div>" if d.get("status") else "")
+                + "</div>")
+    return top + mids + foot + _note(d)
+
+
+def v_parties(d):
+    """여러 기관(3곳 이상)과 한 기관 사이 쟁점: 가운데 기관 + 기관별 쟁점·반응.
+    data: center, rows[{name, issue, answer, kind(no/hold/yes)}], note"""
+    rows = ""
+    for r in d.get("rows", []):
+        bg, fg = _ANS.get(r.get("kind") or "hold")
+        rows += (f"<div style='display:grid;grid-template-columns:150px 1fr 150px;gap:14px;align-items:center;border-bottom:2px solid {LINE};padding:14px 0'>"
+                 f"<b style='font-size:28px;color:{DEEP}'>{t(r.get('name'))}</b>"
+                 f"<span style='font-size:25px;line-height:1.4;color:{TXT}'>{t(r.get('issue'))}</span>"
+                 f"<span style='justify-self:end;background:{bg};color:{fg};border:2px solid {fg};border-radius:10px;padding:4px 12px;font-size:22px;font-weight:900;text-align:center'>{t(r.get('answer'))}</span></div>")
+    head_ = (f"<div style='display:flex;align-items:center;gap:16px;margin-bottom:6px'>"
+             f"<span style='background:linear-gradient(120deg,{B1},{B2});color:#fff;border-radius:999px;padding:10px 26px;font-size:30px;font-weight:900'>{t(d.get('center'))}</span>"
+             f"<span style='font-size:24px;color:{SUB};font-weight:700'>{t(d.get('center_sub'))}</span></div>")
+    hd = (f"<div style='display:grid;grid-template-columns:150px 1fr 150px;gap:14px;font-size:21px;font-weight:700;color:{SUB};padding-top:12px'>"
+          f"<span>기관</span><span>쟁점</span><span style='text-align:right'>반응</span></div>")
+    return head_ + hd + rows + _note(d)
+
+
+RENDER.update(ask=v_ask, parties=v_parties)
+KIND.update(ask="요청·응답", parties="기관별 입장")
+FIT.update({"ask", "parties"})
 VIZ_TYPES = tuple(RENDER)
