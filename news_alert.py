@@ -3117,6 +3117,9 @@ def main() -> int:
         for cid, (typ, title) in seen_c.items():
             print(f"대화방: {cid} | {typ} | {title}")
         print(f"대화방 {len(seen_c)}곳 · 지금 실제 발송 대상: {'부서 채널' if SHARE_CHAT else '개인 대화'}")
+        if SHARE_CHAT:                             # 채널 번호를 등록했으면 연결 확인 메시지 한 줄
+            send_telegram("✅ <b>중수청 언론보도 알림</b> 채널 연결을 확인했습니다. 이 채널로 실시간 기사 알림과 평일 아침·오후 브리핑이 전달됩니다.", silent=True)
+            print("부서 채널에 연결 확인 메시지 발송")
         return 0
     seen = load_seen()
     state = load_state()
