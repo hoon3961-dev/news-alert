@@ -206,7 +206,7 @@ def v_vs(d):
         bg, col = (f"linear-gradient(150deg,{B1},{B2})", "#fff") if dark else (PALE, DEEP)
         pts = "".join(f"<li style='margin:0 0 16px'>{t(p)}</li>" for p in s.get("points", []))
         big = f"<div style='margin:12px 0 4px'>{_num(s['big'], s.get('unit', ''), 76, col)}</div>" if s.get("big") else ""
-        return (f"<div style='flex:1;background:{bg};color:{col};border-radius:26px;padding:30px 40px 24px;display:flex;flex-direction:column;justify-content:center'>"
+        return (f"<div style='flex:1;background:{bg};color:{col};border-radius:26px;padding:34px 40px 24px;display:flex;flex-direction:column;justify-content:flex-start'>"
                 f"<div style='font-size:36px;font-weight:900'>{t(s.get('name'))}</div>{big}<ul style='margin-top:16px;padding-left:28px;font-size:29px;line-height:1.5'>{pts}</ul></div>")
     mid = (f"<div style='align-self:center;flex:none;width:64px;height:64px;border-radius:50%;background:#fff;border:3px solid {B2};color:{B2};font-weight:900;font-size:24px;"
            f"display:flex;align-items:center;justify-content:center;margin:0 -32px;z-index:1'>{t(d.get('mid', 'VS'))}</div>")
