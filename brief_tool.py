@@ -160,6 +160,8 @@ def check(path):
             if v.get("type") not in cards_v2.RENDER:
                 probs.append(f"카드 {k}: viz.type은 {', '.join(cards_v2.RENDER)} 중 하나")
             texts += cards_v2.viz_texts(v)
+            if any(ln.get("km") for ln in (v.get("data") or {}).get("links", [])):
+                probs.append(f"카드 {k}: 지도 직선거리(km:true)는 기사 밖 숫자라 쓰지 않음(11.28. 결정) — 거리는 기사에 있을 때 label로")
         for t in texts:
             if not t:
                 continue
