@@ -52,7 +52,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_SHARE_CHAT_ID: ${{ secrets.TELEGRAM_SHARE_CHAT_ID }}
+          TELEGRAM_SHARE_CHAT_ID: ${{ secrets.TELEGRAM_SHARE_CHAT_ID || '-1005699213949' }}   # 부서 채널 '중수청 언론보도 알림'(번호만으로는 글을 올리거나 들어올 수 없음)
           FIND_CHATS: ${{ inputs.find_chats }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           QUIET_HOURS: ${{ vars.QUIET_HOURS }}
