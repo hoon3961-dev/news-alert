@@ -211,7 +211,7 @@ def press_name(x: str) -> str:
     이미 이름이면 그대로. 끝내 모르면 주소 대신 도메인만(전체 주소가 언론사 자리에 나오지 않게)"""
     x = (x or "").strip()
     if "." not in x or " " in x:
-        return x
+        return PRESS_ALIASES.get(x, x)            # 'Chosunbiz' → 조선비즈(11.28. 카드 출처)
     host = (urlparse(x).netloc if "://" in x else x.split("/")[0]).lower().removeprefix("www.").removeprefix("m.")
     for domain, name in PRESS.items():
         if host == domain or host.endswith("." + domain):
