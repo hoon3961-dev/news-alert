@@ -93,7 +93,7 @@ def cover(day: str, label: str, period: tuple) -> str:
         f"<span style='font-size:77px;letter-spacing:-2px'>{t(d)}<span style='font-size:.84em'>({t(wd)})</span></span><br>언론보도<br>{t(label)} 브리핑</h1>"
         f"<div style='margin-top:40px;font-size:26px;font-weight:700;line-height:1.6;color:{ACC}'>"
         f"<span style='margin-left:-.45em'>〈보도기간〉</span><br>{t(period[0])} 부터<br>{t(period[1])} 까지</div></div>"
-        f"<div style='position:relative;margin-top:auto;font-size:22px;color:{ACC}'>중대범죄수사청 관련 언론보도를 요약한 자료입니다</div></div>")
+        f"<div style='position:relative;margin-top:auto;max-width:540px;font-size:22px;line-height:1.5;color:{ACC}'>중수청 공식 자료가 아니며,<br>언론보도를 개인적으로 모아 요약한 참고 자료입니다</div></div>")
 
 
 # ───────── 목차 ─────────

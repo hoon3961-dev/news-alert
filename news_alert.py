@@ -1110,7 +1110,8 @@ def closing_text(label: str, now: dt.datetime, more: int) -> str:
     pm = label == "오후" or (label not in ("아침", "오후") and now.hour >= 12)
     greet = ("편안한 주말 보내십시오." if now.weekday() == 4 else "오늘 하루도 수고 많으셨습니다.") if pm else "오늘 하루도 힘내십시오."
     return ((f"이 밖에도 중수청 관련 소식이 {more}가지 더 있습니다. " if more else "")
-            + f"자세한 내용은 {where} 확인하실 수 있습니다. 지금까지 중수청 언론보도 브리핑이었습니다. " + greet)
+            + f"자세한 내용은 {where} 확인하실 수 있습니다. 이 브리핑은 중수청 공식 자료가 아니라, 언론보도를 모아 요약한 참고 자료입니다. "
+            + "지금까지 중수청 언론보도 브리핑이었습니다. " + greet)   # 공식 자료 오해 방지(11.28.)
 
 
 def intro_text(label: str, now: dt.datetime) -> str:
