@@ -85,6 +85,26 @@ def prepare(label="", hours=0, test=False):
           f"(본문 없음 {len(out['title_only_ids'])}건) · 범위 {since:%m-%d %H:%M}~{now:%m-%d %H:%M} → brief_input.json")
 
 
+def design_check(v: dict) -> list:
+    """디자인 점검 목록(design_checklist.md) 중 자동으로 잡을 수 있는 것"""
+    t, d, out = v.get("type"), v.get("data") or {}, []
+    if t == "stance" and not ((d.get("a") or {}).get("quote") and (d.get("b") or {}).get("quote")):
+        out.append("입장(stance)은 양쪽 발언을 모두 실어야 함")
+    if t == "ask" and not (d.get("answer") and d.get("ask")):
+        out.append("요청·응답(ask)은 요청과 응답이 모두 기사에 있을 때만")
+    if t == "parties" and len(d.get("rows", [])) < 3:
+        out.append("기관별 입장(parties)은 3곳 이상일 때만 — 두 기관이면 ask·table·stance")
+    if t == "timeline":
+        bad = [s_.get("when") for s_ in d.get("steps", []) if not re.search(r"\d+\s*(?:월|일|년)|\d{4}", s_.get("when") or "")]
+        if bad:
+            out.append(f"타임라인 시점 칸은 날짜만: {bad}")
+    if t == "vs":
+        na, nb = len((d.get("a") or {}).get("points", [])), len((d.get("b") or {}).get("points", []))
+        if abs(na - nb) >= 2:
+            out.append(f"VS 양쪽 요점 수 차이가 큼({na} vs {nb}) — 비슷하게 맞추면 칸이 고르게 보임")
+    return out
+
+
 def check(path):
     d = json.load(open(path, encoding="utf-8"))
     st = _state()
@@ -136,6 +156,10 @@ def check(path):
         probs.append(f"카드: 사안은 {n.CARD_MAX}개까지(지금 {len(cs)}개)")
     for k, c in enumerate(cs, 1):
         src = n._src_text(src_of(c.get("sources", [])))
+        ids = c.get("sources", [])
+        pn = n.press_name(arts[ids[0]].get("press", "")) if ids and ids[0] in arts else "가"
+        if not re.search(r"[가-힣]", pn) and re.search(r"[a-z.]", pn):   # YTN·KBS 같은 대문자 약칭은 통과
+            probs.append(f"카드 {k}: 출처가 한글 언론사 이름이 아님({n.press_name(arts[ids[0]].get('press', ''))}) → press_name 사전에 추가 필요")
         if len(c.get("headline", "")) > 30:
             probs.append(f"카드 {k}: 제목이 김({len(c['headline'])}자)")
         if not 1 <= len(c.get("points", [])) <= 3:
@@ -156,6 +180,7 @@ def check(path):
                 probs.append(f"카드 {k}: 시각화 한 문장이 김({len(v['lead'])}자)")
             if v.get("type") not in cards_v2.RENDER:
                 probs.append(f"카드 {k}: viz.type은 {', '.join(cards_v2.RENDER)} 중 하나")
+            probs += [f"카드 {k}: {x}" for x in design_check(v)]
             texts += cards_v2.viz_texts(v)
             if any(ln.get("km") for ln in (v.get("data") or {}).get("links", [])):
                 probs.append(f"카드 {k}: 지도 직선거리(km:true)는 기사 밖 숫자라 쓰지 않음(11.28. 결정) — 거리는 기사에 있을 때 label로")
