@@ -172,7 +172,20 @@ AUDIO_RATE = float(os.getenv("AUDIO_RATE") or "0.95")    # 읽는 속도(1.0 보
 AUDIO_DICT = os.getenv("AUDIO_DICT") or ""
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
+PERSONAL_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")              # 계장님 개인 대화: 시험 발송은 항상 여기로
+SHARE_CHAT = (os.getenv("TELEGRAM_SHARE_CHAT_ID") or "").strip()   # 부서 비공개 채널(11.28.): 있으면 실제 발송은 여기로
+TG_CHAT = SHARE_CHAT or PERSONAL_CHAT
+
+
+class to_personal:
+    """with to_personal(): 안의 발송만 개인 대화로(시험용)"""
+    def __enter__(self):
+        global TG_CHAT
+        self.prev, TG_CHAT = TG_CHAT, PERSONAL_CHAT
+
+    def __exit__(self, *a):
+        global TG_CHAT
+        TG_CHAT = self.prev
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # 기본 사실표(facts.md): 요약·대본·카드·검증 AI가 모두 참고. '#' 줄은 설명이라 빼고 넘김
 try:
@@ -1300,6 +1313,7 @@ def brief_v2(use: list, label: str, now: dt.datetime, more: int) -> dict:
 
 def send_v2_compare(v2: dict, use: list, label: str, reply_to: int) -> None:
     """나란히 운영: 새 방식 원고를 글로(무음) 보내 기존 브리핑과 비교하게 함"""
+    reply_to = reply_to if TG_CHAT == PERSONAL_CHAT else 0   # 관리용 메시지는 개인 대화로(부서 채널 분리, 11.28.)
     e = html.escape
     paras = [p.strip() for p in re.split(r"\n\s*\n", v2.get("script") or "") if p.strip()]
     txt = (f"🧪 <b>새 방식 원고 (비교용 · {label})</b>\n확인된 사실 {v2.get('n_facts', 0)}개로만 작성 · "
@@ -1311,7 +1325,7 @@ def send_v2_compare(v2: dict, use: list, label: str, reply_to: int) -> None:
     if v2.get("log"):
         txt += "\n\n<blockquote expandable>버린 사실·문장\n" + "\n".join(e(x) for x in v2["log"][:30]) + "</blockquote>"
     for i in range(0, len(txt), 3900):
-        payload = {"chat_id": TG_CHAT.strip(), "text": txt[i:i + 3900], "parse_mode": "HTML",
+        payload = {"chat_id": PERSONAL_CHAT.strip(), "text": txt[i:i + 3900], "parse_mode": "HTML",
                    "disable_web_page_preview": True, "disable_notification": True}
         if reply_to:
             payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
@@ -2039,6 +2053,7 @@ def send_audio(path: str, caption: str, title: str, fmt: str = "") -> int:
 def send_script(script: str, reply_to: int, head: str) -> None:
     """음성에 실제로 넣은 원고를 문단 번호와 함께 글로 보냄(음성 메시지에 답장 형태, 접힌 상태로)
     → 들으면서 '3번 문단 ○○ 발음 이상'처럼 바로 짚을 수 있게"""
+    reply_to = reply_to if TG_CHAT == PERSONAL_CHAT else 0   # 관리용 메시지는 개인 대화로(부서 채널 분리, 11.28.)
     paras = [p.strip() for p in re.split(r"\n\s*\n|\n", script) if p.strip()]
     body = "\n\n".join(f"{n}) {html.escape(p)}" for n, p in enumerate(paras, 1))
     parts, cur = [], ""
@@ -2053,7 +2068,7 @@ def send_script(script: str, reply_to: int, head: str) -> None:
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     for i, part in enumerate(parts):
         text = (head if i == 0 else "") + f"<blockquote expandable>{part}</blockquote>"
-        payload = {"chat_id": TG_CHAT.strip(), "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+        payload = {"chat_id": PERSONAL_CHAT.strip(), "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
         if reply_to:
             payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
         r = requests.post(url, json=payload, timeout=30)
@@ -2340,6 +2355,7 @@ def verify_briefing(raw_script: str, cards: list, groups: list, now: dt.datetime
 
 
 def send_removed(removed: list, reply_to: int, verified: bool) -> None:
+    reply_to = reply_to if TG_CHAT == PERSONAL_CHAT else 0   # 관리용 메시지는 개인 대화로(부서 채널 분리, 11.28.)
     if verified and not removed:
         return
     if verified == "over":
@@ -2351,7 +2367,7 @@ def send_removed(removed: list, reply_to: int, verified: bool) -> None:
     else:
         text = "⚠️ <b>자동 검증에서 뺀 문장</b> (원문과 다르거나 근거가 없어 음성·카드에서 제외)\n" + "\n".join(
             f"• [{html.escape(w)}] {html.escape(t)}\n  └ {html.escape(y)}" for w, t, y in removed)
-    payload = {"chat_id": TG_CHAT.strip(), "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}
+    payload = {"chat_id": PERSONAL_CHAT.strip(), "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
     r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json=payload, timeout=30)
@@ -2881,6 +2897,13 @@ def card_fields(c: dict) -> dict:
 
 
 def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
+    if json.load(open(path, encoding="utf-8")).get("test"):
+        with to_personal():                        # 시험 원고는 개인 대화로만
+            return _manual_briefing(state, now, path)
+    return _manual_briefing(state, now, path)
+
+
+def _manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
     """Claude가 쓴 원고 파일로 음성·카드 발송(AI 호출 없음).
     파일: {label, cut, paras:[{text, sources:[기사 id]}], cards:[{tag, headline, points, sources}], articles:{id:{title,press,url}}, more, notes}"""
     d = json.load(open(path, encoding="utf-8"))
@@ -2947,6 +2970,13 @@ def audio_briefing(state: dict, now: dt.datetime) -> None:
     label = audio_due(state, now)
     if not label:
         return
+    if label == "시험":
+        with to_personal():
+            return _audio_briefing(state, now, label)
+    return _audio_briefing(state, now, label)
+
+
+def _audio_briefing(state: dict, now: dt.datetime, label: str) -> None:
     since = dt.datetime.fromisoformat(state["audio_cut"]) if state.get("audio_cut") else now - dt.timedelta(hours=14)
     if label == "시험":                            # 시험은 언제 눌러도 들어 볼 수 있게 최근 24시간 기사로
         since = now - dt.timedelta(hours=24)
@@ -3076,6 +3106,18 @@ def main() -> int:
         print(f"{now:%H:%M} 방해금지 시간 - 건너뜀")
         return 0
 
+    if (os.getenv("FIND_CHATS") or "").strip().lower() == "true":   # 채널 번호 찾기: 봇이 받은 최근 대화방 목록 출력
+        r = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates", params={"limit": 100}, timeout=20).json()
+        seen_c = {}
+        for u in r.get("result", []):
+            m = u.get("channel_post") or u.get("message") or u.get("my_chat_member") or {}
+            c = m.get("chat") or {}
+            if c.get("id"):
+                seen_c[c["id"]] = (c.get("type"), c.get("title") or c.get("first_name") or "")
+        for cid, (typ, title) in seen_c.items():
+            print(f"대화방: {cid} | {typ} | {title}")
+        print(f"대화방 {len(seen_c)}곳 · 지금 실제 발송 대상: {'부서 채널' if SHARE_CHAT else '개인 대화'}")
+        return 0
     seen = load_seen()
     state = load_state()
     if BRIEF_FILE:                                 # Claude 원고 발송 실행: 기사 수집 없이 음성·카드만
@@ -3138,8 +3180,9 @@ def main() -> int:
         items = [dict(from_record(r), priority=False, group=None) for r in reversed(recs)]
         page = telegraph_page(items, now, "[시험] 공소청·형사사법 언론보도 모음",
                               f"시험 견본 · {now.month}월 {now.day}일 기사 {len(items)}건")
-        send_telegram(f"🧪 <b>시험 · 공소청·형사사법 모음</b> 견본 {len(items)}건\n"
-                      "아래 카드를 누르면 요약과 기사 링크가 열립니다.", silent=True, preview_url=page)
+        with to_personal():
+            send_telegram(f"🧪 <b>시험 · 공소청·형사사법 모음</b> 견본 {len(items)}건\n"
+                          "아래 카드를 누르면 요약과 기사 링크가 열립니다.", silent=True, preview_url=page)
         print(f"모음 시험 견본 발송: {len(items)}건")
     if state["pending"] and due:
         items = []

@@ -13,6 +13,10 @@ on:
         description: "공소청·형사사법 모음 지금 시험 발송(대기 중인 기사)"
         type: boolean
         default: false
+      find_chats:
+        description: "부서 채널 번호 찾기(봇이 들어간 대화방 목록을 기록에 출력)"
+        type: boolean
+        default: false
       brief_file:
         description: "Claude가 쓴 브리핑 원고 파일(briefs/*.json) — 음성·카드만 만들어 발송"
         type: string
@@ -48,6 +52,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_SHARE_CHAT_ID: ${{ secrets.TELEGRAM_SHARE_CHAT_ID }}
+          FIND_CHATS: ${{ inputs.find_chats }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           QUIET_HOURS: ${{ vars.QUIET_HOURS }}
           DIGEST_MINUTES: ${{ vars.DIGEST_MINUTES }}
