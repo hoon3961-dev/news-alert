@@ -570,3 +570,88 @@ RENDER.update(ask=v_ask, parties=v_parties)
 KIND.update(ask="요청·응답", parties="기관별 입장")
 FIT.update({"ask", "parties"})
 VIZ_TYPES = tuple(RENDER)
+
+
+# ───────── 지도 2판(11.28.): 실제 시·도 경계(통계청 2013 경계, southkorea-maps 단순화) ─────────
+_GEO = {"서울": (126.978, 37.566), "인천": (126.705, 37.456), "수원": (127.029, 37.263), "성남": (127.137, 37.420),
+        "춘천": (127.730, 37.881), "원주": (127.920, 37.342), "강릉": (128.876, 37.752), "청주": (127.489, 36.642),
+        "세종": (127.289, 36.480), "대전": (127.385, 36.351), "전주": (127.148, 35.824), "광주": (126.852, 35.160),
+        "대구": (128.601, 35.871), "창원": (128.682, 35.228), "부산": (129.075, 35.180), "울산": (129.311, 35.539),
+        "제주": (126.531, 33.500)}
+_PROV_SHORT = {"서울특별시": "서울", "경기도": "경기", "강원도": "강원", "충청북도": "충북", "충청남도": "충남", "세종특별자치시": "세종",
+               "대전광역시": "대전", "전라북도": "전북", "전라남도": "전남", "광주광역시": "광주", "경상북도": "경북", "대구광역시": "대구",
+               "경상남도": "경남", "울산광역시": "울산", "부산광역시": "부산", "인천광역시": "인천", "제주특별자치도": "제주"}
+
+
+def _km(a, b):
+    import math
+    (x1, y1), (x2, y2) = _GEO[a], _GEO[b]
+    p1, p2 = math.radians(y1), math.radians(y2)
+    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(x2 - x1) / 2) ** 2
+    return 2 * 6371 * math.asin(math.sqrt(h))
+
+
+def v_map2(d):
+    """지도: regions=[{name:'강원', kind:'ask'|'main'}], spots=[{city, label, kind:main/ask/move}],
+    links=[{from, to, label?, km?:true}], legend{main,ask}, side[], note. km:true면 지도상 직선거리(기사 밖 정보라 표시)"""
+    import json as _j
+    fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "kr_prov.json")
+    prov = _j.load(open(fp, encoding="utf-8"))
+    zoom = d.get("zoom") or "all"            # all: 전국 | mainland: 제주 빼고 | north: 수도권·강원·충청(중부)
+    box = {"all": (124.5, 130.0, 33.0, 38.7), "mainland": (125.0, 129.7, 34.2, 38.65), "north": (125.9, 129.6, 36.2, 38.65)}.get(zoom)
+    lon0, lon1, lat1, lat0 = box
+    k = 100.0
+    import math
+    cx = math.cos(math.radians(36))
+    P = lambda lo, la: ((lo - lon0) * k * cx, (lat0 - la) * k)  # noqa: E731
+    fs = (lon1 - lon0) / 5.5                  # 확대할수록 글자·점이 커지지 않게
+    reg = {r.get("name"): r.get("kind", "ask") for r in d.get("regions", [])}
+    fills = {"ask": "#FDE7E0", "main": "#D6E2FF"}
+    paths = ""
+    for name, polys in prov.items():
+        f = fills.get(reg.get(_PROV_SHORT.get(name)), "#EEF2F9")
+        for poly in polys:
+            pts = " ".join(f"{P(x, y)[0]:.1f},{P(x, y)[1]:.1f}" for x, y in poly)
+            paths += f"<polygon points='{pts}' fill='{f}' stroke='#AFC2E6' stroke-width='0.9'/>"
+    lines, marks = "", ""
+    for ln in d.get("links", []):
+        a, b = ln.get("from"), ln.get("to")
+        if a not in _GEO or b not in _GEO:
+            continue
+        (x1, y1), (x2, y2) = P(*_GEO[a]), P(*_GEO[b])
+        lab = ln.get("label") or ""
+        if ln.get("km"):
+            lab = (lab + " " if lab else "") + f"직선 약 {round(_km(a, b) / 5) * 5}km"
+        lines += (f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' stroke='{WARN}' stroke-width='{3 * fs:.1f}' stroke-dasharray='{7 * fs:.1f} {6 * fs:.1f}'/>")
+        if lab:
+            mx, my = (x1 + x2) / 2 - 20 * fs, (y1 + y2) / 2 + 36 * fs
+            w = len(lab) * 15 * fs + 16 * fs
+            lines += (f"<rect x='{mx - w / 2:.1f}' y='{my - 17 * fs:.1f}' width='{w:.1f}' height='{28 * fs:.1f}' rx='{8 * fs:.1f}' fill='#fff' stroke='{WARN}' stroke-width='{2 * fs:.1f}'/>"
+                      f"<text x='{mx:.1f}' y='{my + 3 * fs:.1f}' text-anchor='middle' font-size='{17 * fs:.1f}' font-weight='900' fill='{WARN}'>{t(lab)}</text>")
+    for s_ in d.get("spots", []):
+        if s_.get("city") not in _GEO:
+            continue
+        x, y = P(*_GEO[s_["city"]])
+        col = {"main": B2, "ask": WARN, "move": "#9DB4E8"}.get(s_.get("kind") or "main", B2)
+        lab = s_.get("label") or s_["city"]
+        left = s_.get("side") == "left"
+        marks += (f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{8 * fs:.1f}' fill='{col}' stroke='#fff' stroke-width='{3 * fs:.1f}'/>"
+                  f"<text x='{x + (-14 if left else 14) * fs:.1f}' y='{y + 6 * fs:.1f}' text-anchor='{'end' if left else 'start'}' font-size='{20 * fs:.1f}' font-weight='900' fill='{DEEP}' "
+                  f"paint-order='stroke' stroke='#fff' stroke-width='{5 * fs:.1f}'>{t(lab)}</text>")
+    leg = ""
+    for kk, lab in (d.get("legend") or {}).items():
+        col = {"main": B2, "ask": WARN, "move": "#9DB4E8"}.get(kk, B2)
+        leg += f"<div style='display:flex;align-items:center;gap:12px;font-size:26px'><span style='flex:none;width:22px;height:22px;border-radius:50%;background:{col}'></span><b>{t(lab)}</b></div>"
+    side = "".join(f"<div style='font-size:24px;line-height:1.5;color:{TXT};padding:10px 0;border-bottom:2px solid {LINE}'>{t(x)}</div>" for x in d.get("side", []))
+    any_km = any(ln.get("km") for ln in d.get("links", []))
+    foot = "※ 시·도 경계 개략도" + (" · 거리는 지도상 직선거리(기사 내용 아님)" if any_km else "")
+    W, H = P(lon1, lat1)
+    return (f"<div style='flex:1;display:flex;gap:22px;align-items:center;min-height:0'>"
+            f"<svg viewBox='0 0 {W:.0f} {H:.0f}' style='flex:none;height:{d.get('h', 450)}px;max-width:560px;width:auto;overflow:hidden'>{paths}{lines}{marks}</svg>"
+            f"<div style='flex:1;display:flex;flex-direction:column;gap:14px'>{leg}<div style='margin-top:6px'>{side}</div></div></div>"
+            f"<div style='font-size:19px;color:#8592A3'>{foot}</div>" + _note(d, "6px"))
+
+
+RENDER.update(map2=v_map2)
+KIND.update(map2="지도")
+VIZ_TYPES = tuple(RENDER)
