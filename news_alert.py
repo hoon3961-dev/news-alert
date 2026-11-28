@@ -2663,8 +2663,7 @@ def card_pages(cards: list, sources: list, when: str, when_short: str, label: st
         f"<div style='font-size:60px;font-weight:900;line-height:1.35;margin-top:44px;position:relative'>기사 원문은<br>텔레그램 메시지의<br>"
         f"<span style='color:#9CC3EA'>링크</span>에서 확인하세요</div>"
         f"<div style='font-size:31px;line-height:1.7;margin-top:52px;opacity:.85;position:relative;border-top:2px solid rgba(255,255,255,.25);padding-top:40px'>{extra}"
-        f"이 카드는 언론 보도 내용을 요약한 것으로<br>사실관계가 확인되지 않은 내용이 포함될 수 있습니다.<br>"
-        f"외부 배포를 금합니다.</div>"
+        f"이 카드는 언론 보도 내용을 요약한 것으로<br>사실관계가 확인되지 않은 내용이 포함될 수 있습니다.</div>"
         f"<div style='position:absolute;left:0;right:0;bottom:64px;display:flex;justify-content:center'>{_plate(56, '18px 30px')}</div></div>"))
     return pages
 

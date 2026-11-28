@@ -347,7 +347,7 @@ def closing(pg: str) -> str:
         "<div style='width:96px;height:96px;border-radius:28px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center'>"
         "<svg width='52' height='52' viewBox='0 0 64 64' fill='none' stroke='#FFFFFF' stroke-width='5' stroke-linecap='round'><path d='M27 37a10 10 0 0 0 14 0l9-9a10 10 0 0 0-14-14l-3 3'/><path d='M37 27a10 10 0 0 0-14 0l-9 9a10 10 0 0 0 14 14l3-3'/></svg></div>"
         f"<h1 style='margin-top:40px;font-size:76px;font-weight:900;line-height:1.3'>기사 원문은<br>텔레그램 메시지의<br><span style='color:{ACC}'>링크</span>에서 확인하세요</h1>"
-        f"<div style='margin-top:40px;padding-top:30px;border-top:2px solid rgba(255,255,255,.3);font-size:28px;line-height:1.7;color:{ACC}'>언론 보도를 요약한 것으로 사실관계가 확인되지 않은<br>내용이 포함될 수 있습니다. 외부 배포를 금합니다.</div></div>"
+        f"<div style='margin-top:40px;padding-top:30px;border-top:2px solid rgba(255,255,255,.3);font-size:28px;line-height:1.7;color:{ACC}'>언론 보도를 요약한 것으로 사실관계가 확인되지 않은<br>내용이 포함될 수 있습니다.</div></div>"
         f"<div style='position:relative;font-size:22px;color:{ACC}'>중대범죄수사청 관련 언론보도를 요약한 자료입니다</div></div>")
 
 
