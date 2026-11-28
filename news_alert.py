@@ -2836,7 +2836,7 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
         pages = card_pages(cards, sources, f"{now:%Y. %m. %d.}({wd}) {now:%H:%M}", f"{now:%m.%d.}({wd}) {label}",
                            f"{label} 브리핑", n_art, more)
         paths = render_cards(pages, folder)
-    caption = (warn + f"🗂 <b>중수청 {label} 카드뉴스</b> (부서 공유용) · 사안 {len(cards)}개 · {len(paths)}장\n"
+    caption = (warn + f"🗂 <b>중수청 {label} 카드뉴스</b> · 사안 {len(cards)}개 · {len(paths)}장\n"
                + ("파일을 누르면 카드 전체를 넘겨 볼 수 있습니다.\n" if CARD_SEND == "pdf" else
                   "표지를 누른 뒤 옆으로 밀면 다음 장이 이어집니다.\n" if CARD_SEND == "cover" else "")
                + "사안별 기사 링크는 아래 메시지에 모두 있습니다.")
