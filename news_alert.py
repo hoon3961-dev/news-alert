@@ -2897,7 +2897,8 @@ def card_fields(c: dict) -> dict:
 
 
 def manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
-    if json.load(open(path, encoding="utf-8")).get("test"):
+    _d = json.load(open(path, encoding="utf-8"))
+    if _d.get("test") and not _d.get("to_channel"):   # to_channel: 채널에 샘플로 보여 줄 때(11.28.)
         with to_personal():                        # 시험 원고는 개인 대화로만
             return _manual_briefing(state, now, path)
     return _manual_briefing(state, now, path)
@@ -2953,7 +2954,8 @@ def _manual_briefing(state: dict, now: dt.datetime, path: str) -> None:
             use.append(g)
             cards.append(card_fields(c))
         until = dt.datetime.fromisoformat(d["cut"]) if d.get("cut") else now
-        card_briefing(use, label, now, n_art, 0, mid, cards, "🧪 <b>시험</b>\n" if test else "", since, min(until, now))
+        tag = ("📌 <b>샘플</b> · 지난 브리핑으로 만든 예시입니다\n" if d.get("to_channel") else "🧪 <b>시험</b>\n") if test else ""
+        card_briefing(use, label, now, n_art, 0, mid, cards, tag, since, min(until, now))
     if test:                                       # 시험은 발송 범위·시각 기록을 바꾸지 않음
         return
     slot = None                                    # 이 시간대 자동 브리핑(대비책)이 다시 나가지 않게
