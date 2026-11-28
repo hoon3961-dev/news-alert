@@ -2362,7 +2362,7 @@ def send_removed(removed: list, reply_to: int, verified: bool) -> None:
 # ── 카드뉴스(브리핑마다 텔레그램 앨범, 부서 공유용·보고서풍) ─────────────────
 # CARD=off 로 끄기. CARD_MAX: 사안 최대 개수(표지·목차·마무리 3장 + 사안 → 텔레그램 앨범 10장 이내라 7 이하)
 CARD_ON = (os.getenv("CARD") or "on").strip().lower() != "off"
-CARD_MAX = max(1, min(int(os.getenv("CARD_MAX") or "7"), 7))
+CARD_MAX = max(1, min(int(os.getenv("CARD_MAX") or "8"), 8))
 CARD_STYLE = (os.getenv("CARD_STYLE") or "v2").strip().lower()   # v2: 정사각 새 틀 / v1: 예전 세로 틀
 CARD_TAGS = {"조직·인력": "#2E5C8A", "인사": "#6B4F8A", "수사": "#8A3B3B", "국회·예산": "#3D6B4F",
              "제도·협의": "#7A6230", "기타": "#5B6B7F"}
@@ -2812,7 +2812,7 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
     if CARD_STYLE == "v2":                         # 정사각: 표지·목차·사안(시각화 포함 사안당 최대 2장)·마무리
         import cards_v2
         pages = cards_v2.build(cards, sources, now, label, since or now - dt.timedelta(hours=14), until or now,
-                               fit=(CARD_SEND != "pdf"))   # PDF는 장수 제한이 없어 시각화를 빼지 않음
+                               fit=False)   # 11.28. 사용자: 장수 제한 없음 → 시각화를 빼지 않고 10장 넘으면 묶음을 나눠 '이어서 N~M쪽' 표시
         if CARD_SEND == "cover":
             cards_v2.ALBUM_MAX = 11
         paths = render_cards(pages, folder, 1080)
@@ -2830,8 +2830,14 @@ def card_briefing(use: list, label: str, now: dt.datetime, n_art: int, more: int
         for k in range(0, len(rest), 10):
             send_cards(rest[k:k + 10], f"🗂 {label} 카드뉴스 {k + 2}~{k + 1 + len(rest[k:k + 10])}쪽", cid or reply_to)
     elif not (CARD_SEND == "pdf" and send_cards_pdf(paths, caption, f"중수청_{label}_카드뉴스_{now:%m%d}.pdf", reply_to)):
-        for k in range(0, len(paths), 10):         # 텔레그램 앨범은 한 번에 10장까지
-            send_cards(paths[k:k + 10], caption if k == 0 else f"🗂 {label} 카드뉴스 (이어서)", reply_to)
+        for k in range(0, len(paths), 10):         # 텔레그램 앨범은 한 번에 10장까지 → 넘으면 쪽 번호를 밝혀 나눠 보냄
+            end = min(k + 10, len(paths))
+            pg = lambda a, b: f"{a}쪽" if a == b else f"{a}~{b}쪽"   # noqa: E731
+            if k == 0:
+                cap = caption + (f"\n(1~{end}쪽 · 이어서 {pg(end + 1, len(paths))})" if len(paths) > 10 else "")
+            else:
+                cap = f"🗂 {label} 카드뉴스 이어서 {pg(k + 1, end)}"
+            send_cards(paths[k:end], cap, reply_to)
     # 설명란은 1,024자 제한이라 링크가 잘렸음 → 모든 기사 링크를 따로 보냄(4,096자씩 나눔)
     e = html.escape
     blocks = []

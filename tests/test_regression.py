@@ -142,7 +142,7 @@ import cards_v2
 _cs = [{"headline": f"사안{i}", "viz": {"type": "vs"}} for i in range(5)]
 check("카드 장수 맞춤: 사안 5개·시각화 5개(13장) → 표지+묶음 한도 이내", 3 + sum(2 if c.get("viz") else 1 for c in cards_v2.fit_album(_cs)) <= cards_v2.ALBUM_MAX)
 check("카드 10장 맞춤: 앞 사안 시각화는 남김", bool(cards_v2.fit_album(_cs)[0].get("viz")))
-check("카드 사안 최대 7개(표지·목차·마무리 포함 한도 이내)", n.CARD_MAX + 3 <= cards_v2.ALBUM_MAX)
+check("카드 사안 최대 8개", n.CARD_MAX == 8)
 check("발음: 내란 특별수사본부 붙여 읽기", "내란특별수사본부를" in n.speakable("내란 특별수사본부를 출범합니다.", sound=True))
 check("발음: 내란 특수본 붙여 읽기", "내란특수본" in n.speakable("내란 특수본이 출범합니다.", sound=True))
 check("원고 글은 띄어쓰기 그대로", "내란 특별수사본부" in n.speakable("내란 특별수사본부를 출범합니다."))
