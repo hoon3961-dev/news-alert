@@ -37,7 +37,7 @@ def _asset(name: str) -> str:
 
 def page(body: str) -> str:
     return ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'><style>*{margin:0;padding:0;box-sizing:border-box}"
-            "html,body{width:1080px;height:1080px;overflow:hidden}</style></head><body>" + body + "</body></html>")
+            "html,body{width:1080px;height:1080px;overflow:hidden}body{word-break:keep-all;text-wrap:pretty}</style></head><body>" + body + "</body></html>")
 
 
 def band(date_label: str, pg: str) -> str:
@@ -215,10 +215,11 @@ def v_vs(d):
 
 def v_timeline(d):
     steps = d.get("steps", [])
+    grow = "flex:1;min-height:0" if len(steps) > 4 else "flex:none;min-height:120px"   # 단계가 적으면 간격을 좁게(11.28.)
     out = ""
     for i, s in enumerate(steps):
         on, last = bool(s.get("hl")), i == len(steps) - 1
-        out += (f"<div style='display:flex;gap:22px;flex:1;min-height:0'>"
+        out += (f"<div style='display:flex;gap:22px;{grow}'>"
                 f"<div style='flex:none;width:150px;text-align:right;font-size:28px;font-weight:900;color:{B2 if on else DEEP};padding-top:2px'>{t(s.get('when'))}</div>"
                 f"<div style='flex:none;display:flex;flex-direction:column;align-items:center;width:26px'><div style='width:24px;height:24px;border-radius:50%;background:{B2 if on else '#fff'};border:4px solid {B2};margin-top:6px'></div>"
                 + ("" if last else f"<div style='flex:1;width:4px;background:{PALE}'></div>") +
@@ -423,8 +424,8 @@ def v_table(d):
             f"<div style='background:{B2};color:#fff;border-radius:16px;padding:14px;text-align:center;font-size:30px;font-weight:900'>{t(b)}</div></div>")
     rows = "".join(f"<div style='display:grid;grid-template-columns:170px 1fr 1fr;gap:10px;align-items:stretch'>"
                    f"<div style='display:flex;align-items:center;font-size:25px;font-weight:900;color:{B2}'>{t(r.get('item'))}</div>"
-                   f"<div style='border:2px solid {LINE};border-radius:16px;padding:16px 18px;font-size:26px;line-height:1.45'>{t(r.get('a'))}</div>"
-                   f"<div style='border:2px solid {B2};border-radius:16px;padding:16px 18px;font-size:26px;line-height:1.45'>{t(r.get('b'))}</div></div>"
+                   f"<div style='border:2px solid {LINE};border-radius:16px;padding:16px 18px;font-size:26px;line-height:1.45;text-wrap:balance;display:flex;align-items:center'>{t(r.get('a'))}</div>"
+                   f"<div style='border:2px solid {B2};border-radius:16px;padding:16px 18px;font-size:26px;line-height:1.45;text-wrap:balance;display:flex;align-items:center'>{t(r.get('b'))}</div></div>"
                    for r in d.get("rows", []))
     return head + f"<div style='margin-top:12px;display:flex;flex-direction:column;gap:12px'>{rows}</div>" + _note(d)
 
@@ -432,8 +433,8 @@ def v_table(d):
 def v_profile(d):
     """인물 소개(사진 없이)"""
     init = t((d.get("name") or " ")[0])
-    rows = "".join(f"<div style='display:grid;grid-template-columns:120px 1fr;gap:18px;padding:14px 0;border-bottom:2px solid {LINE}'>"
-                   f"<b style='font-size:25px;color:{B2}'>{t(k)}</b><span style='font-size:27px;line-height:1.5'>{t(v)}</span></div>" for k, v in d.get("rows", []))
+    rows = "".join(f"<div style='display:grid;grid-template-columns:170px 1fr;gap:18px;padding:14px 0;border-bottom:2px solid {LINE}'>"
+                   f"<b style='font-size:25px;color:{B2};white-space:nowrap'>{t(k)}</b><span style='font-size:27px;line-height:1.5'>{t(v)}</span></div>" for k, v in d.get("rows", []))
     return (f"<div style='display:flex;align-items:center;gap:26px'>"
             f"<div style='flex:none;width:120px;height:120px;border-radius:50%;background:linear-gradient(140deg,{B1},{B2});color:#fff;display:flex;align-items:center;justify-content:center;font-size:56px;font-weight:900'>{init}</div>"
             f"<div><div style='font-size:46px;font-weight:900'>{t(d.get('name'))}</div><div style='margin-top:6px;font-size:27px;color:{SUB};font-weight:700'>{t(d.get('role'))}</div></div></div>"
@@ -495,7 +496,7 @@ def v_stance(d):
         return (f"<div style='display:flex;flex-direction:column;align-items:{'flex-end' if right else 'flex-start'}'>"
                 f"<div style='font-size:25px;font-weight:900;color:{B2 if right else DEEP};margin-bottom:8px'>{t(s.get('who'))}</div>"
                 f"<div style='max-width:88%;background:{col};color:{fg};border-radius:{'28px 28px 6px 28px' if right else '28px 28px 28px 6px'};padding:24px 30px;font-size:30px;line-height:1.5;font-weight:700'>"
-                f"“{t(s.get('quote'))}”</div>"
+                + (t(s.get('quote')) if re.search(r"[‘’'\"“”]", s.get('quote') or "") else f"“{t(s.get('quote'))}”") + "</div>"
                 + (f"<div style='margin-top:8px;font-size:22px;color:{SUB}'>{t(s.get('sub'))}</div>" if s.get("sub") else "") + "</div>")
     return f"<div style='display:flex;flex-direction:column;gap:30px'>{bub(d.get('a', {}), False)}{bub(d.get('b', {}), True)}</div>" + _note(d, "20px")
 

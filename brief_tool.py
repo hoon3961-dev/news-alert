@@ -90,7 +90,7 @@ def check(path):
     st = _state()
     by_url = {r["url"]: r for r in st.get("audio_log", [])}
     arts = d.get("articles", {})
-    now = dt.datetime.now(n.KST)
+    now = dt.datetime.fromisoformat(d["now"]) if d.get("now") else dt.datetime.now(n.KST)   # 지난 날짜 시험용
     probs = []
 
     def src_of(ids):
@@ -182,7 +182,7 @@ def preview(path):
     """GitHub이 만들 것과 같은 틀로 카드 그림을 미리 만들고 한 장으로 모은 그림(preview/sheet.png)을 만듦 → 눈으로 확인"""
     d = json.load(open(path, encoding="utf-8"))
     arts = d.get("articles", {})
-    now = dt.datetime.now(n.KST)
+    now = dt.datetime.fromisoformat(d["now"]) if d.get("now") else dt.datetime.now(n.KST)   # 지난 날짜 시험용
     use, cards = [], []
     for c in d.get("cards", [])[:n.CARD_MAX]:
         g = [arts[i] for i in c.get("sources", []) if i in arts]
